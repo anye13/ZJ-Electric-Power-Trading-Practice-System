@@ -16,8 +16,6 @@ import jieba
 jieba.initialize()
 print("jieba 分词器初始化完成", file=sys.stderr)
 app = Flask(__name__)
-# 初始化智谱客户端
-client = ZhipuAiClient(api_key=ZHIPU_API_KEY)
 CORS(app)
 init_db()
 print("数据库初始化完成", file=sys.stderr)
@@ -37,6 +35,40 @@ try:
     clean_old_progress()
 except Exception as e:
     print(f"⚠️ 启动清理失败（不影响应用启动）: {e}", file=sys.stderr)
+
+
+def build_ai_client(provider):
+    """根据 provider 配置构建客户端，返回 (client, model)"""
+    ptype = (provider.get("provider") or "zhipu").lower()
+    api_key = provider.get("api_key", "")
+    model = provider.get("model") or ZHIPU_MODEL
+    base_url = provider.get("base_url") or None
+
+    if ptype == "zhipu":
+        return ZhipuAiClient(api_key=api_key), model
+
+    if ptype == "openai":
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise RuntimeError(
+                "使用 OpenAI 兼容 provider 需安装依赖：pip install openai"
+            )
+        kwargs = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        return OpenAI(**kwargs), model
+
+    raise ValueError(f"不支持的 provider 类型：{ptype}")
+
+
+def get_active_ai_client():
+    provider = get_active_ai_provider()
+    if not provider:
+        raise RuntimeError("尚未配置任何 AI Provider，请前往设置页添加")
+    if not provider.get("api_key"):
+        raise RuntimeError("当前 Provider 缺少 API Key")
+    return build_ai_client(provider)
 
 
 # ------------------------- 全局状态类 -------------------------
@@ -590,16 +622,16 @@ def chop_question():
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    """AI 对话接口"""
+    """AI 对话接口（使用当前激活的 Provider）"""
     data = request.json
     user_message = data.get("message")
     if not user_message:
         return jsonify({"error": "消息不能为空"}), 400
 
-    # 可以维护对话上下文（可选），此处仅单轮
     try:
+        client, model = get_active_ai_client()
         response = client.chat.completions.create(
-            model=ZHIPU_MODEL,
+            model=model,
             messages=[
                 {
                     "role": "system",
@@ -790,6 +822,118 @@ def set_clean_days():
         return jsonify({"status": "ok", "days": days})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ------------------------- AI 配置管理 -------------------------
+@app.route("/api/ai_config", methods=["GET"])
+def get_ai_config_route():
+    return jsonify(get_ai_config(mask_key=True))
+
+
+@app.route("/api/ai_config/providers", methods=["POST"])
+def add_ai_provider_route():
+    data = request.json or {}
+    if not data.get("name"):
+        return jsonify({"error": "名称不能为空"}), 400
+    if not data.get("api_key"):
+        return jsonify({"error": "API Key 不能为空"}), 400
+
+    provider = {
+        "name": data["name"].strip(),
+        "provider": (data.get("provider") or "zhipu").strip(),
+        "api_key": data["api_key"].strip(),
+        "model": (data.get("model") or "glm-4.7-flash").strip(),
+        "base_url": (data.get("base_url") or "").strip(),
+        "retry_count": int(data.get("retry_count", 7)),
+        "retry_delay": int(data.get("retry_delay", 2)),
+    }
+    try:
+        add_ai_provider(provider)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/ai_config/providers/<provider_id>", methods=["PUT"])
+def update_ai_provider_route(provider_id):
+    data = request.json or {}
+    allowed = {
+        "name",
+        "provider",
+        "api_key",
+        "model",
+        "base_url",
+        "retry_count",
+        "retry_delay",
+    }
+    updates = {k: v for k, v in data.items() if k in allowed}
+    for k in ("retry_count", "retry_delay"):
+        if k in updates and updates[k] is not None and updates[k] != "":
+            try:
+                updates[k] = int(updates[k])
+            except ValueError:
+                updates.pop(k)
+    try:
+        update_ai_provider(provider_id, updates)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/ai_config/providers/<provider_id>", methods=["DELETE"])
+def delete_ai_provider_route(provider_id):
+    try:
+        delete_ai_provider(provider_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/ai_config/active", methods=["POST"])
+def set_active_ai_route():
+    data = request.json or {}
+    provider_id = data.get("id")
+    if not provider_id:
+        return jsonify({"error": "缺少 provider id"}), 400
+    try:
+        set_active_ai_provider(provider_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/ai_config/test", methods=["POST"])
+def test_ai_config():
+    """测试指定/当前激活的 Provider；可临时覆盖 api_key 进行测试"""
+    data = request.json or {}
+    provider_id = data.get("id")
+
+    if provider_id:
+        cfg = get_ai_config(mask_key=False)
+        provider = next(
+            (p for p in cfg["providers"] if p.get("id") == provider_id), None
+        )
+        if not provider:
+            return jsonify({"success": False, "error": "Provider 不存在"}), 404
+        if data.get("api_key"):
+            provider = {**provider, "api_key": data["api_key"]}
+    else:
+        provider = get_active_ai_provider()
+
+    if not provider or not provider.get("api_key"):
+        return jsonify({"success": False, "error": "缺少 API Key"}), 400
+
+    try:
+        client, model = build_ai_client(provider)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=16,
+        )
+        reply = response.choices[0].message.content or ""
+        return jsonify({"success": True, "reply": reply[:80]})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
 
 # ------------------------- 试卷管理 -------------------------

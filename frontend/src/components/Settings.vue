@@ -50,6 +50,99 @@
                 配置文件：<code>{{ dbMeta.config_file }}</code>
             </p>
         </div>
+        <!-- AI 接口配置 -->
+        <div class="settings-card">
+            <h3>🤖 AI 接口配置</h3>
+            <p class="desc">
+                可配置多个 AI Provider（智谱 GLM / OpenAI 兼容），选择其中一个作为当前使用。
+                设置保存在后端 <code>ai_config.json</code>。
+            </p>
+
+            <!-- Provider 列表 -->
+            <div class="ai-list">
+                <div v-for="p in aiConfig.providers" :key="p.id" class="ai-item"
+                    :class="{ active: p.id === aiConfig.active_id }">
+                    <div class="ai-item-info">
+                        <div class="ai-name">
+                            {{ p.name }}
+                            <span v-if="p.id === aiConfig.active_id" class="current-tag">当前</span>
+                        </div>
+                        <div class="ai-meta">
+                            {{ providerTypeName(p.provider) }} · {{ p.model }}
+                        </div>
+                        <div class="ai-key">
+                            Key：{{ p.has_api_key ? p.api_key_masked : '未配置' }}
+                        </div>
+                    </div>
+                    <div class="ai-item-actions">
+                        <button class="btn btn-sm btn-primary" :disabled="p.id === aiConfig.active_id"
+                            @click="handleSetActive(p.id)">
+                            {{ p.id === aiConfig.active_id ? '已启用' : '启用' }}
+                        </button>
+                        <button class="btn btn-sm" @click="handleTestProvider(p.id)">测试</button>
+                        <button class="btn btn-sm btn-edit" @click="openEditAi(p)">编辑</button>
+                        <button class="btn btn-sm btn-danger" @click="handleDeleteAi(p)">删除</button>
+                    </div>
+                </div>
+                <div v-if="aiConfig.providers.length === 0" class="empty-state">
+                    尚未配置任何 AI Provider，请先添加
+                </div>
+            </div>
+
+            <button v-if="!aiFormVisible" class="btn btn-success" @click="openAddAi">
+                ➕ 添加 Provider
+            </button>
+
+            <!-- 新增/编辑表单 -->
+            <div v-if="aiFormVisible" class="ai-form">
+                <h4>{{ aiEditingId ? '编辑 Provider' : '新增 Provider' }}</h4>
+                <div class="db-grid">
+                    <div class="db-field">
+                        <label>名称</label>
+                        <input type="text" v-model="aiForm.name" placeholder="例如：智谱 GLM" />
+                    </div>
+                    <div class="db-field">
+                        <label>类型</label>
+                        <select v-model="aiForm.provider">
+                            <option value="zhipu">智谱 GLM</option>
+                            <option value="openai">OpenAI 兼容</option>
+                        </select>
+                    </div>
+                    <div class="db-field db-field-wide">
+                        <label>API Key</label>
+                        <input type="password" v-model="aiForm.api_key"
+                            :placeholder="aiEditingId ? '不修改请留空' : '请输入 API Key'" />
+                    </div>
+                    <div class="db-field">
+                        <label>模型名</label>
+                        <input type="text" v-model="aiForm.model" placeholder="glm-4.7-flash" />
+                    </div>
+                    <div class="db-field">
+                        <label>Base URL（OpenAI 兼容时填）</label>
+                        <input type="text" v-model="aiForm.base_url" placeholder="https://api.deepseek.com/v1" />
+                    </div>
+                    <div class="db-field">
+                        <label>重试次数</label>
+                        <input type="number" v-model.number="aiForm.retry_count" min="0" max="20" />
+                    </div>
+                    <div class="db-field">
+                        <label>初始延迟（秒）</label>
+                        <input type="number" v-model.number="aiForm.retry_delay" min="0" max="60" />
+                    </div>
+                </div>
+
+                <div class="db-actions">
+                    <button class="btn btn-primary" @click="handleSaveAi" :disabled="aiSaving">
+                        {{ aiSaving ? '保存中...' : '保存' }}
+                    </button>
+                    <button class="btn" @click="cancelAiForm" :disabled="aiSaving">取消</button>
+                </div>
+
+                <div v-if="aiMessage" class="db-msg" :class="aiMessageOk ? 'db-ok' : 'db-err'">
+                    {{ aiMessage }}
+                </div>
+            </div>
+        </div>
         <div class="settings-card">
             <h3>练习试卷</h3>
             <div class="paper-setting">
@@ -116,6 +209,7 @@
 import { ref, onMounted } from 'vue';
 import { useExamStore } from '@/stores/exam';
 import * as api from '@/api';
+import type { AiConfig } from '@/api';
 import type { Paper } from '@/types';
 const store = useExamStore();
 const limit = ref(20);
@@ -129,6 +223,134 @@ const selectedPaperId = ref<number | null>(null);
 const paperSaved = ref(false);
 const cleaning = ref(false);
 const cleanMsg = ref('');
+const aiConfig = ref<AiConfig>({ active_id: null, providers: [] });
+const aiFormVisible = ref(false);
+const aiEditingId = ref<string | null>(null);
+const aiForm = ref({
+    name: '',
+    provider: 'zhipu',
+    api_key: '',
+    model: 'glm-4.7-flash',
+    base_url: '',
+    retry_count: 7,
+    retry_delay: 2,
+});
+const aiSaving = ref(false);
+const aiMessage = ref('');
+const aiMessageOk = ref(false);
+function providerTypeName(t: string) {
+    return t === 'zhipu' ? '智谱 GLM' : t === 'openai' ? 'OpenAI 兼容' : t;
+}
+
+async function loadAiConfig() {
+    try {
+        aiConfig.value = await api.getAiConfig();
+    } catch (e) {
+        console.error('加载 AI 配置失败', e);
+    }
+}
+
+function openAddAi() {
+    aiEditingId.value = null;
+    aiForm.value = {
+        name: '',
+        provider: 'zhipu',
+        api_key: '',
+        model: 'glm-4.7-flash',
+        base_url: '',
+        retry_count: 7,
+        retry_delay: 2,
+    };
+    aiMessage.value = '';
+    aiFormVisible.value = true;
+}
+
+function openEditAi(p: any) {
+    aiEditingId.value = p.id;
+    aiForm.value = {
+        name: p.name || '',
+        provider: p.provider || 'zhipu',
+        api_key: '', // 留空表示不修改
+        model: p.model || '',
+        base_url: p.base_url || '',
+        retry_count: p.retry_count ?? 7,
+        retry_delay: p.retry_delay ?? 2,
+    };
+    aiMessage.value = '';
+    aiFormVisible.value = true;
+}
+
+function cancelAiForm() {
+    aiFormVisible.value = false;
+    aiEditingId.value = null;
+    aiMessage.value = '';
+}
+
+async function handleSaveAi() {
+    aiSaving.value = true;
+    aiMessage.value = '';
+    try {
+        const payload: any = { ...aiForm.value };
+        if (aiEditingId.value) {
+            // 编辑：密码留空不覆盖
+            if (!payload.api_key) delete payload.api_key;
+            await api.updateAiProvider(aiEditingId.value, payload);
+            aiMessage.value = '✅ 已更新';
+        } else {
+            if (!payload.api_key) {
+                aiMessageOk.value = false;
+                aiMessage.value = '❌ 新增时必须填写 API Key';
+                aiSaving.value = false;
+                return;
+            }
+            await api.addAiProvider(payload);
+            aiMessage.value = '✅ 已添加';
+        }
+        aiMessageOk.value = true;
+        await loadAiConfig();
+        setTimeout(() => {
+            aiFormVisible.value = false;
+            aiMessage.value = '';
+        }, 800);
+    } catch (e: any) {
+        aiMessageOk.value = false;
+        aiMessage.value = `❌ ${e.response?.data?.error || e.message}`;
+    } finally {
+        aiSaving.value = false;
+    }
+}
+
+async function handleSetActive(id: string) {
+    try {
+        await api.setActiveAiProvider(id);
+        await loadAiConfig();
+    } catch (e: any) {
+        alert(`切换失败：${e.response?.data?.error || e.message}`);
+    }
+}
+
+async function handleTestProvider(id: string) {
+    try {
+        const res = await api.testAiProvider(id);
+        if (res.success) {
+            alert(`✅ 测试成功\n返回：${res.reply || '(空)'}`);
+        } else {
+            alert(`❌ 测试失败：${res.error}`);
+        }
+    } catch (e: any) {
+        alert(`❌ 测试失败：${e.response?.data?.error || e.message}`);
+    }
+}
+
+async function handleDeleteAi(p: any) {
+    if (!confirm(`确定删除 Provider「${p.name}」？`)) return;
+    try {
+        await api.deleteAiProvider(p.id);
+        await loadAiConfig();
+    } catch (e: any) {
+        alert(`删除失败：${e.response?.data?.error || e.message}`);
+    }
+}
 // ========== 数据库配置 ==========
 onMounted(async () => {
     // 加载模式
@@ -148,6 +370,7 @@ onMounted(async () => {
         cleanDays.value = 7;
     }
     loadPapers();
+    await loadAiConfig();
 });
 // ========== 数据库配置 ==========
 const dbForm = ref({
@@ -665,6 +888,109 @@ async function saveCleanDays() {
     .clean-setting .btn,
     .paper-setting .btn {
         width: 100%;
+    }
+}
+
+/* ========== AI 配置 ========== */
+.ai-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 12px 0;
+}
+
+.ai-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    min-width: 0;
+}
+
+.ai-item.active {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+}
+
+.ai-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.ai-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.current-tag {
+    background: var(--accent-blue);
+    color: #fff;
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 10px;
+}
+
+.ai-meta {
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin-top: 2px;
+}
+
+.ai-key {
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-top: 2px;
+    word-break: break-all;
+}
+
+.ai-item-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+}
+
+.ai-form {
+    margin-top: 16px;
+    padding: 16px;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+    border: 1px solid var(--border-color);
+    min-width: 0;
+}
+
+.ai-form h4 {
+    margin: 0 0 12px 0;
+    color: var(--text-primary);
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .ai-item {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .ai-item-actions {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px;
+    }
+
+    .ai-item-actions .btn {
+        width: 100%;
+    }
+
+    .ai-form {
+        padding: 12px;
     }
 }
 </style>

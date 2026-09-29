@@ -88,6 +88,12 @@ DB_CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "db_config.json"
 )
 _db_config_cache = None
+# ============ AI 配置文件 ============
+AI_CONFIG_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "ai_config.json"
+)
+
+_ai_config_cache = None
 
 
 def _tokenize(text: str) -> set:
@@ -295,6 +301,152 @@ def init_db():
         conn.commit()
     finally:
         conn.close()
+
+
+def _load_ai_config():
+    """读取 AI 配置，首次运行会用 .env 里的智谱配置做种子"""
+    global _ai_config_cache
+    if _ai_config_cache is not None:
+        return _ai_config_cache
+
+    cfg = {"active_id": None, "providers": []}
+
+    if os.path.exists(AI_CONFIG_FILE):
+        try:
+            with open(AI_CONFIG_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                cfg["active_id"] = saved.get("active_id")
+                cfg["providers"] = saved.get("providers") or []
+        except Exception as e:
+            print(f"读取 ai_config.json 失败: {e}", file=sys.stderr)
+    else:
+        # 首次启动，用 config.py 里的 ZHIPU_* 做种子
+        from config import (
+            ZHIPU_API_KEY,
+            ZHIPU_MODEL,
+            ZHIPU_RETRY_COUNT,
+            ZHIPU_RETRY_DELAY,
+        )
+
+        if ZHIPU_API_KEY:
+            seed = {
+                "id": "seed-zhipu",
+                "name": "智谱 GLM（来自 .env）",
+                "provider": "zhipu",
+                "api_key": ZHIPU_API_KEY,
+                "model": ZHIPU_MODEL,
+                "base_url": "",
+                "retry_count": ZHIPU_RETRY_COUNT,
+                "retry_delay": ZHIPU_RETRY_DELAY,
+            }
+            cfg["providers"] = [seed]
+            cfg["active_id"] = seed["id"]
+            try:
+                with open(AI_CONFIG_FILE, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, ensure_ascii=False, indent=2)
+                print("✅ 已根据 .env 生成 ai_config.json", file=sys.stderr)
+            except Exception as e:
+                print(f"写入 ai_config.json 失败: {e}", file=sys.stderr)
+
+    _ai_config_cache = cfg
+    return cfg
+
+
+def get_ai_config(mask_key=True):
+    """获取 AI 配置。mask_key=True 时脱敏 api_key 并标记 has_api_key"""
+    cfg = _load_ai_config()
+    if not mask_key:
+        return cfg
+
+    masked = {"active_id": cfg.get("active_id"), "providers": []}
+    for p in cfg.get("providers", []):
+        item = dict(p)
+        key = item.get("api_key", "") or ""
+        if key:
+            if len(key) > 12:
+                item["api_key_masked"] = f"{key[:4]}****{key[-4:]}"
+            else:
+                item["api_key_masked"] = "*" * len(key)
+            item["has_api_key"] = True
+            item["api_key"] = ""  # 不回传明文
+        else:
+            item["api_key_masked"] = ""
+            item["has_api_key"] = False
+        masked["providers"].append(item)
+    return masked
+
+
+def save_ai_config(new_cfg):
+    global _ai_config_cache
+    with open(AI_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+    _ai_config_cache = None
+    print("✅ AI 配置已保存到 ai_config.json", file=sys.stderr)
+
+
+def get_active_ai_provider():
+    """返回当前激活的 provider（含明文 api_key），没有则 None"""
+    cfg = _load_ai_config()
+    providers = cfg.get("providers") or []
+    if not providers:
+        return None
+    active_id = cfg.get("active_id")
+    for p in providers:
+        if p.get("id") == active_id:
+            return p
+    return providers[0]
+
+
+def add_ai_provider(provider):
+    import uuid
+
+    cfg = _load_ai_config()
+    if not provider.get("id"):
+        provider["id"] = f"ai-{uuid.uuid4().hex[:8]}"
+    cfg["providers"].append(provider)
+    if not cfg.get("active_id"):
+        cfg["active_id"] = provider["id"]
+    save_ai_config(cfg)
+    return cfg
+
+
+def update_ai_provider(provider_id, updates):
+    cfg = _load_ai_config()
+    found = False
+    for p in cfg["providers"]:
+        if p.get("id") == provider_id:
+            # api_key 为空字符串或 None 表示不修改
+            if "api_key" in updates and not updates["api_key"]:
+                updates = {k: v for k, v in updates.items() if k != "api_key"}
+            p.update(updates)
+            found = True
+            break
+    if not found:
+        raise ValueError("Provider 不存在")
+    save_ai_config(cfg)
+    return cfg
+
+
+def delete_ai_provider(provider_id):
+    cfg = _load_ai_config()
+    before = len(cfg["providers"])
+    cfg["providers"] = [p for p in cfg["providers"] if p.get("id") != provider_id]
+    if len(cfg["providers"]) == before:
+        raise ValueError("Provider 不存在")
+    if cfg.get("active_id") == provider_id:
+        cfg["active_id"] = cfg["providers"][0]["id"] if cfg["providers"] else None
+    save_ai_config(cfg)
+    return cfg
+
+
+def set_active_ai_provider(provider_id):
+    cfg = _load_ai_config()
+    if not any(p.get("id") == provider_id for p in cfg["providers"]):
+        raise ValueError("Provider 不存在")
+    cfg["active_id"] = provider_id
+    save_ai_config(cfg)
+    return cfg
 
 
 def load_questions():

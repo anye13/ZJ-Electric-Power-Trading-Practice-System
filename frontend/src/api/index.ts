@@ -165,3 +165,38 @@ export const getRecommendedNext = (
     }).then(res => res.data);
 export const cleanProgress = (days?: number) =>
     api.post('/clean_progress', days !== undefined ? { days } : {}).then(res => res.data);
+// ========== AI 配置 ==========
+export interface AiProvider {
+    id: string;
+    name: string;
+    provider: 'zhipu' | 'openai' | string;
+    api_key_masked?: string;
+    has_api_key?: boolean;
+    model: string;
+    base_url?: string;
+    retry_count?: number;
+    retry_delay?: number;
+}
+
+export interface AiConfig {
+    active_id: string | null;
+    providers: AiProvider[];
+}
+
+export const getAiConfig = (): Promise<AiConfig> =>
+    api.get('/ai_config').then(res => res.data);
+
+export const addAiProvider = (data: Partial<AiProvider> & { api_key: string }) =>
+    api.post('/ai_config/providers', data).then(res => res.data);
+
+export const updateAiProvider = (id: string, data: Partial<AiProvider>) =>
+    api.put(`/ai_config/providers/${id}`, data).then(res => res.data);
+
+export const deleteAiProvider = (id: string) =>
+    api.delete(`/ai_config/providers/${id}`).then(res => res.data);
+
+export const setActiveAiProvider = (id: string) =>
+    api.post('/ai_config/active', { id }).then(res => res.data);
+
+export const testAiProvider = (id?: string, apiKey?: string) =>
+    api.post('/ai_config/test', { id, api_key: apiKey }).then(res => res.data);
