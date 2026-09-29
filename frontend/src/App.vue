@@ -1,8 +1,15 @@
 <template>
   <div id="app">
     <header class="top-header">
-      <h1>📚 全国电力市场规则题库</h1>
-      <div class="header-center">
+      <!-- 移动端汉堡按钮 -->
+      <button class="menu-toggle" @click="toggleSidebar" aria-label="菜单">
+        <span></span><span></span><span></span>
+      </button>
+
+      <h1 class="app-title">📚 全国电力市场规则题库</h1>
+
+      <!-- 试卷选择：桌面端才显示 -->
+      <div class="header-center desktop-only">
         <label>📄 试卷：</label>
         <select :value="paperStore.selectedPaperId ?? ''" @change="onPaperChange" class="paper-selector">
           <option value="">全部试卷</option>
@@ -11,28 +18,47 @@
           </option>
         </select>
       </div>
-      <span class="clock">{{ now }}</span>
-      <button class="chat-toggle" @click="toggleChat">💬 AI 助手</button>
+
+      <span class="clock desktop-only">{{ now }}</span>
+
+      <button class="chat-toggle" @click="toggleChat">💬 AI</button>
     </header>
+
+    <!-- 侧边栏遮罩 -->
+    <transition name="fade">
+      <div v-if="sidebarOpen" class="sidebar-mask" @click="closeSidebar"></div>
+    </transition>
+
     <div class="main-body">
-      <nav class="sidebar">
+      <nav class="sidebar" :class="{ open: sidebarOpen }">
+        <!-- 移动端试卷选择（桌面端隐藏） -->
+        <div class="sidebar-paper">
+          <label>📄 试卷</label>
+          <select :value="paperStore.selectedPaperId ?? ''" @change="onPaperChange" class="paper-selector-mobile">
+            <option value="">全部试卷</option>
+            <option v-for="p in paperStore.papers" :key="p.id" :value="p.id">
+              {{ p.title }}
+            </option>
+          </select>
+        </div>
+
         <ul>
           <li><router-link to="/" active-class="active">🏠 首页</router-link></li>
           <li><router-link to="/exam" active-class="active">✍️ 做题界面</router-link></li>
           <li><router-link to="/analysis" active-class="active">📊 数据统计</router-link></li>
           <li><router-link to="/wrong-analysis" active-class="active">📉 错题分析</router-link></li>
           <li><router-link to="/knowledge" active-class="active">🧠 知识图谱</router-link></li>
-          <li><router-link to="/srs" active-class="active">🔁 间隔复习</router-link></li>
-          <li><router-link to="/graph-walk" active-class="active">🧭 图谱漫游</router-link></li>
           <li><router-link to="/manage" active-class="active">📋 管理界面</router-link></li>
           <li><router-link to="/settings" active-class="active">⚙️ 设置</router-link></li>
         </ul>
+
         <div class="theme-toggle">
           <button @click="toggleTheme" class="theme-btn">
             {{ isDark ? '☀️ 亮色模式' : '🌙 暗色模式' }}
           </button>
         </div>
       </nav>
+
       <div class="content-area">
         <router-view v-slot="{ Component }">
           <keep-alive include="ExamPanel">
@@ -42,7 +68,7 @@
         </router-view>
       </div>
     </div>
-    <!-- 模态窗 -->
+
     <ImportModal v-model:visible="showImport" @imported="onImported" />
     <EditModal v-model:visible="showEdit" :question="editingQuestion" @saved="onEditSaved" />
     <AIChatSidebar v-model:visible="showChat" />
@@ -70,6 +96,10 @@ const showChat = ref(false);
 const isDark = ref(true); // 暗黑模式开关
 const toggleChat = () => (showChat.value = !showChat.value);
 const paperStore = usePaperStore();
+// ========== 移动端侧边栏 ==========
+const sidebarOpen = ref(false);
+function toggleSidebar() { sidebarOpen.value = !sidebarOpen.value; }
+function closeSidebar() { sidebarOpen.value = false; }
 function toggleTheme() {
   isDark.value = !isDark.value;
   updateTheme();
@@ -117,6 +147,8 @@ async function onPaperChange(e: Event) {
   await paperStore.setPaper(id);
 }
 onUnmounted(() => clearInterval(timer));
+// 路由切换时自动收起
+watch(() => route.path, () => { sidebarOpen.value = false; });
 // 路由切换时重置设置（可选）
 watch(() => route.path, (newPath) => {
   // 仅当进入 /wrong 时强制错题模式（但侧边栏已移除 /wrong 路由，可忽略）
@@ -129,6 +161,12 @@ watch(() => route.path, (newPath) => {
 </script>
 
 <style scoped>
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
 /* ===== 顶部栏 ===== */
 .top-header {
   background: var(--bg-card);
@@ -141,6 +179,7 @@ watch(() => route.path, (newPath) => {
   top: 0;
   z-index: 100;
   border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
 
 .header-center {
@@ -185,7 +224,8 @@ watch(() => route.path, (newPath) => {
 /* ===== 主体 flex ===== */
 .main-body {
   display: flex;
-  height: calc(100vh - 70px);
+  flex: 1;
+  min-height: 0;
   margin-top: 0;
   gap: 0;
   background: var(--bg-primary);
@@ -287,5 +327,134 @@ watch(() => route.path, (newPath) => {
 
 .chat-toggle:hover {
   background: var(--bg-hover);
+}
+
+/* 汉堡按钮：桌面端隐藏 */
+.menu-toggle {
+  display: none;
+  flex-direction: column;
+  gap: 5px;
+  background: none;
+  border: none;
+  padding: 8px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.menu-toggle span {
+  display: block;
+  width: 22px;
+  height: 2px;
+  background: var(--text-primary);
+  border-radius: 2px;
+}
+
+.menu-toggle:active {
+  background: var(--bg-hover);
+}
+
+/* 侧边栏中的移动端试卷选择：桌面端隐藏 */
+.sidebar-paper {
+  display: none;
+  padding: 12px 16px 4px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 8px;
+}
+
+.sidebar-paper label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.paper-selector-mobile {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* 淡入淡出过渡 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* ========== 移动端适配 ========== */
+@media (max-width: 768px) {
+  .top-header {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+
+  .menu-toggle {
+    display: flex;
+  }
+
+  .desktop-only {
+    display: none !important;
+  }
+
+  .app-title {
+    flex: 1;
+    font-size: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+    margin: 0;
+  }
+
+  .chat-toggle {
+    padding: 5px 10px;
+    font-size: 13px;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: 260px;
+    max-width: 80vw;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    z-index: 200;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.4);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar-mask {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 199;
+  }
+
+  .sidebar-paper {
+    display: block;
+  }
+
+  .content-area {
+    padding: 12px;
+  }
+
+  /* 侧边栏条目略高一点，便于手指点击 */
+  .sidebar li a {
+    padding: 14px 20px;
+    font-size: 15px;
+  }
 }
 </style>

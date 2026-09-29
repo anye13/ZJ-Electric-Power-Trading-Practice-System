@@ -346,4 +346,74 @@ onMounted(async () => {
     padding: 40px;
     color: var(--text-secondary);
 }
+
+@media (max-width: 768px) {
+    .analysis-wrapper {
+        padding: 12px;
+    }
+
+    .analysis-wrapper h2 {
+        font-size: 20px;
+    }
+
+    .actions {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .actions .btn {
+        font-size: 13px;
+        padding: 6px 12px;
+    }
+
+    /* 布局改为纵向堆叠，去掉固定高度 */
+    .report-layout {
+        flex-direction: column;
+        height: auto;
+        min-height: auto;
+        gap: 12px;
+    }
+
+    /* 题型侧栏改为横向滚动 tab */
+    .type-sidebar {
+        width: 100%;
+        padding: 10px;
+        overflow-x: auto;
+    }
+
+    .type-sidebar h3 {
+        display: none;
+    }
+
+    .type-sidebar ul {
+        display: flex;
+        gap: 6px;
+        white-space: nowrap;
+    }
+
+    .type-sidebar li {
+        padding: 6px 12px;
+        background: var(--bg-secondary);
+        border-radius: 16px;
+        flex-shrink: 0;
+    }
+
+    .type-sidebar li.active {
+        background: var(--accent-blue);
+        color: #fff;
+    }
+
+    /* 内容区去掉固定高度和内部滚动 */
+    .report-content {
+        height: auto;
+        max-height: none;
+        padding: 12px;
+        overflow-x: auto;
+    }
+
+    /* 表格横向滚动 */
+    .table {
+        min-width: 640px;
+    }
+}
 </style>

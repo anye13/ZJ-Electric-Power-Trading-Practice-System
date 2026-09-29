@@ -364,4 +364,41 @@ const close = () => {
   margin-top: 8px;
   color: var(--accent-red);
 }
+
+@media (max-width: 768px) {
+  .modal-content {
+    padding: 16px;
+  }
+
+  .modal-header h2 {
+    font-size: 17px;
+  }
+
+  /* 选项行改窄一点，但保持横向 */
+  .option-row {
+    gap: 6px;
+  }
+
+  .option-label {
+    width: 16px;
+    font-size: 13px;
+  }
+
+  /* checkbox / radio 组换行 */
+  .checkbox-group,
+  .radio-group {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  /* 操作按钮占满 */
+  .form-actions {
+    flex-direction: column-reverse;
+    gap: 8px;
+  }
+
+  .form-actions .btn {
+    width: 100%;
+  }
+}
 </style>

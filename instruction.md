@@ -96,17 +96,17 @@ git pull
 
 ## 三、常用命令速查
 
-| 操作 | 命令 |
-|---|---|
-| 看远程地址 | `git remote -v` |
-| 改远程地址 | `git remote set-url origin <新地址>` |
-| 看状态 | `git status` |
-| 看提交历史 | `git log --oneline` |
-| 看当前分支 | `git branch` |
-| 拉取最新 | `git pull` |
-| 推送 | `git push` |
-| 撤销 add（未提交） | `git restore --staged .` |
-| 查看某文件改动 | `git diff <文件名>` |
+| 操作               | 命令                                   |
+| ------------------ | -------------------------------------- |
+| 看远程地址         | `git remote -v`                      |
+| 改远程地址         | `git remote set-url origin <新地址>` |
+| 看状态             | `git status`                         |
+| 看提交历史         | `git log --oneline`                  |
+| 看当前分支         | `git branch`                         |
+| 拉取最新           | `git pull`                           |
+| 推送               | `git push`                           |
+| 撤销 add（未提交） | `git restore --staged .`             |
+| 查看某文件改动     | `git diff <文件名>`                  |
 
 ---
 

@@ -372,4 +372,57 @@ onActivated(() => {
     font-size: 13px;
     margin-bottom: 12px;
 }
+
+@media (max-width: 768px) {
+    .dashboard {
+        padding: 10px;
+        min-height: auto;
+    }
+
+    .calendar-wrapper {
+        padding: 14px;
+    }
+
+    .calendar-header {
+        margin-bottom: 14px;
+    }
+
+    .month-title {
+        font-size: 16px;
+    }
+
+    .nav-btn {
+        width: 30px;
+        height: 30px;
+        font-size: 16px;
+    }
+
+    .calendar-grid {
+        gap: 3px;
+    }
+
+    .weekday {
+        font-size: 12px;
+        padding: 4px 0;
+    }
+
+    .calendar-cell .day-number {
+        font-size: 12px;
+    }
+
+    .calendar-cell .day-count {
+        font-size: 9px;
+    }
+
+    .legend {
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: flex-start;
+        font-size: 12px;
+    }
+
+    .current-paper {
+        font-size: 12px;
+    }
+}
 </style>

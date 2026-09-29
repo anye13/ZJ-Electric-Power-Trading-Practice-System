@@ -168,8 +168,23 @@ const submitAdd = async () => {
         emit('added');
         close();
     } catch (e: any) {
-        error.value = e.message || '添加失败';
-    } finally {
+        if (e.response && e.response.status === 409) {
+            const info = e.response.data;
+            error.value = info.error || '检测到重复题目';
+            // 可选：弹出模态窗询问是否强制添加
+            if (confirm(`${info.error}\n\n是否仍要强制添加？`)) {
+                try {
+                    // 加一个 force 参数给后端，跳过去重
+                    await api.createQuestion({ ...payload, force: true });
+                    emit('added');
+                    close();
+                } catch (e2: any) {
+                    error.value = e2.message || '添加失败';
+                }
+            }
+        }
+    }
+    finally {
         saving.value = false;
     }
 };
@@ -339,5 +354,42 @@ onMounted(() => {
 .error-info {
     margin-top: 8px;
     color: var(--accent-red);
+}
+
+@media (max-width: 768px) {
+    .modal-content {
+        padding: 16px;
+    }
+
+    .modal-header h2 {
+        font-size: 17px;
+    }
+
+    /* 选项行改窄一点，但保持横向 */
+    .option-row {
+        gap: 6px;
+    }
+
+    .option-label {
+        width: 16px;
+        font-size: 13px;
+    }
+
+    /* checkbox / radio 组换行 */
+    .checkbox-group,
+    .radio-group {
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    /* 操作按钮占满 */
+    .form-actions {
+        flex-direction: column-reverse;
+        gap: 8px;
+    }
+
+    .form-actions .btn {
+        width: 100%;
+    }
 }
 </style>

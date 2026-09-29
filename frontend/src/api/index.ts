@@ -33,7 +33,18 @@ interface SubmitResponse {
     is_wrong: boolean;
     all_done: boolean;   // 新增
 }
+// ========== 数据库配置 ==========
+export const getDbConfig = () => api.get('/db_config').then(res => res.data);
 
+export const testDbConfig = (data: {
+    host?: string; user?: string; password?: string;
+    database?: string; port?: number;
+}) => api.post('/db_config/test', data).then(res => res.data);
+
+export const saveDbConfig = (data: {
+    host?: string; user?: string; password?: string;
+    database?: string; port?: number;
+}) => api.post('/db_config', data).then(res => res.data);
 // ========== 做题相关 ==========
 export const getCurrentQuestion = () => api.get('/questions').then(res => res.data);
 
@@ -123,18 +134,6 @@ export const updateKnowledgePoint = (id: number, name: string, description?: str
 export const deleteKnowledgePoint = (id: number) => api.delete(`/knowledge_points/${id}`).then(res => res.data);
 export const getKnowledgeGraph = (paperId?: number) =>
     api.get('/knowledge_graph', { params: { paper_id: paperId } }).then(res => res.data);
-// ========== 间隔重复 ==========
-export const getSrsDue = (paperId?: number) =>
-    api.get('/srs/due', { params: { paper_id: paperId } }).then(res => res.data);
-
-export const reviewSrsCard = (cardId: number, quality: number) =>
-    api.post('/srs/review', { card_id: cardId, quality }).then(res => res.data);
-
-export const getSrsStats = (paperId?: number) =>
-    api.get('/srs/stats', { params: { paper_id: paperId } }).then(res => res.data);
-
-export const addToSrs = (questionId: number) =>
-    api.post('/srs/add', { question_id: questionId }).then(res => res.data);
 
 // ========== 图谱漫游 ==========
 export const startGraphWalk = (knowledgeId: number) =>
@@ -143,3 +142,26 @@ export const startGraphWalk = (knowledgeId: number) =>
 export const getRelatedKnowledge = (knowledgeId: number, paperId?: number) =>
     api.get('/graph/walk/related', { params: { knowledge_id: knowledgeId, paper_id: paperId } })
         .then(res => res.data);
+export const getKnowledgePointsByPaper = (
+    paperId?: number,
+    walkable?: boolean,
+    minCooccur?: number
+) =>
+    api.get('/knowledge_points/by_paper', {
+        params: {
+            paper_id: paperId,
+            walkable: walkable ? 'true' : undefined,
+            min_cooccur: minCooccur,
+        },
+    }).then(res => res.data);
+// ========== 图谱漫游：推荐下一站 ==========
+export const getRecommendedNext = (
+    knowledgeId: number,
+    paperId?: number,
+    limit: number = 5
+) =>
+    api.get('/graph/walk/recommend', {
+        params: { knowledge_id: knowledgeId, paper_id: paperId, limit },
+    }).then(res => res.data);
+export const cleanProgress = (days?: number) =>
+    api.post('/clean_progress', days !== undefined ? { days } : {}).then(res => res.data);

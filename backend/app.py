@@ -10,7 +10,11 @@ from zhipuai import ZhipuAI
 from config import ZHIPU_API_KEY, ZHIPU_MODEL, ZHIPU_RETRY_COUNT, ZHIPU_RETRY_DELAY
 import time
 import atexit
+import jieba
 
+# 预热分词器，避免首次请求卡顿
+jieba.initialize()
+print("jieba 分词器初始化完成", file=sys.stderr)
 app = Flask(__name__)
 # 初始化智谱客户端
 client = ZhipuAiClient(api_key=ZHIPU_API_KEY)
@@ -26,6 +30,13 @@ scheduler.start()
 
 # 在应用退出时关闭调度器
 atexit.register(lambda: scheduler.shutdown())
+# ========== 启动时扫描并清理过期已答记录 ==========
+# 阈值取自 user_settings.clean_days（默认 7 天，可在设置页修改）
+try:
+    print("🔍 启动清理：扫描数据库中的过期已答记录...", file=sys.stderr)
+    clean_old_progress()
+except Exception as e:
+    print(f"⚠️ 启动清理失败（不影响应用启动）: {e}", file=sys.stderr)
 
 
 # ------------------------- 全局状态类 -------------------------
@@ -204,6 +215,80 @@ state = ExamState()
 
 
 # ------------------------- API 路由 -------------------------
+# ------------------------- 数据库配置 -------------------------
+@app.route("/api/db_config", methods=["GET"])
+def get_db_config_route():
+    cfg = get_db_config()
+    has_pwd = bool(cfg.get("password"))
+    masked = dict(cfg)
+    if has_pwd:
+        masked["password"] = "*" * min(len(cfg["password"]), 12)
+    masked["has_password"] = has_pwd
+    masked["config_file"] = DB_CONFIG_FILE
+    return jsonify(masked)
+
+
+@app.route("/api/db_config/test", methods=["POST"])
+def test_db_config():
+    data = request.json or {}
+    current = get_db_config()
+
+    # 若前端提交的密码是纯 *，则沿用原密码
+    pwd = data.get("password")
+    if pwd is None or (pwd and set(pwd) == {"*"}):
+        pwd = current.get("password", "")
+
+    test_cfg = {
+        "host": data.get("host", current["host"]),
+        "user": data.get("user", current["user"]),
+        "password": pwd,
+        "database": data.get("database", current["database"]),
+        "port": int(data.get("port", current["port"])),
+    }
+    try:
+        conn = get_db(override=test_cfg)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/db_config", methods=["POST"])
+def save_db_config_route():
+    data = request.json or {}
+    current = get_db_config()
+
+    pwd = data.get("password")
+    if pwd is None or (pwd and set(pwd) == {"*"}):
+        pwd = current.get("password", "")
+
+    new_cfg = {
+        "host": (data.get("host") or current["host"]).strip(),
+        "user": (data.get("user") or current["user"]).strip(),
+        "password": pwd,
+        "database": (data.get("database") or current["database"]).strip(),
+        "port": int(data.get("port") or current["port"]),
+    }
+
+    # 保存前先试连
+    try:
+        conn = get_db(override=new_cfg)
+        conn.close()
+    except Exception as e:
+        return jsonify({"success": False, "error": f"连接失败：{e}"}), 400
+
+    save_db_config(new_cfg)
+
+    # 尝试让内存中的题库状态也重新加载
+    try:
+        init_db()
+        state.reload_questions()
+    except Exception as e:
+        print(f"配置保存后重载失败（不影响下次启动）: {e}", file=sys.stderr)
+
+    return jsonify({"success": True, "message": "配置已保存并生效"})
+
+
 @app.route("/api/test", methods=["GET"])
 def test():
     return jsonify({"status": "ok"})
@@ -336,8 +421,6 @@ def submit_answer():
     if not state.progress.get(qid_str, False):
         state.progress[qid_str] = True
         state.save_progress()
-    # 加入间隔重复系统
-    add_question_to_srs(question_id)
     return jsonify(
         {
             "correct": is_correct,
@@ -562,8 +645,30 @@ def manage_list():
 @app.route("/api/manage/create", methods=["POST"])
 def create_question():
     data = request.get_json()
+    force = data.pop("force", False)
     knowledge_ids = data.get("knowledge_ids", [])
-    qid = create_question_in_db(data)
+    if force:
+        qid = create_question_in_db_unchecked(data)
+        if knowledge_ids:
+            set_question_knowledge(qid, knowledge_ids)
+        state.reload_questions()
+        reset_all_ids()
+        state.reload_questions()
+        return jsonify({"id": qid, "success": True})
+    qid, is_dup, existing_id, similarity = create_question_in_db(data)
+    if is_dup:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "duplicate": True,
+                    "existing_id": existing_id,
+                    "similarity": round(similarity * 100, 1),
+                    "error": f"与已有题目 #{existing_id} 高度相似（{similarity*100:.1f}%），已跳过",
+                }
+            ),
+            409,
+        )
     if knowledge_ids:
         set_question_knowledge(qid, knowledge_ids)
     state.reload_questions()
@@ -589,7 +694,19 @@ def batch_delete():
 def edit_question(qid):
     data = request.get_json()
     knowledge_ids = data.get("knowledge_ids", [])
-    update_question(qid, data)
+    success, error, existing_id = update_question(qid, data)
+    if not success:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "duplicate": True,
+                    "existing_id": existing_id,
+                    "error": error,
+                }
+            ),
+            409,
+        )
     set_question_knowledge(qid, knowledge_ids)
     state.reload_questions()
     return jsonify({"success": True})
@@ -609,8 +726,9 @@ def import_questions():
     data = request.get_json()
     if not data or "questions" not in data:
         return jsonify({"error": "无效数据"}), 400
-    paper_id = data.get("paper_id")  # ← 从请求中获取
-    added, skipped = import_from_json_data(data, paper_id)
+    paper_id = data.get("paper_id")
+    threshold = data.get("threshold", 0.85)  # 前端可传入阈值
+    added, skipped = import_from_json_data(data, paper_id, threshold)
     state.reload_questions()
     reset_all_ids()
     state.reload_questions()
@@ -634,9 +752,26 @@ def recent_wrong():
 
 @app.route("/api/clean_progress", methods=["POST"])
 def clean_progress():
-    days = request.json.get("days", 7)
-    clean_old_progress(days)
-    return jsonify({"status": "ok", "days": days})
+    """手动触发清理。
+
+    - 传入 days：使用该天数作为阈值
+    - 不传 days：使用 user_settings.clean_days
+    """
+    data = request.json or {}
+    days = data.get("days")
+
+    if days is not None:
+        try:
+            days = int(days)
+            if days < 1:
+                days = 1
+        except (TypeError, ValueError):
+            return jsonify({"error": "days 参数无效"}), 400
+        clean_old_progress_with_days(days)
+        return jsonify({"status": "ok", "days": days})
+    else:
+        clean_old_progress()
+        return jsonify({"status": "ok", "days": "database"})
 
 
 @app.route("/api/set_clean_days", methods=["POST"])
@@ -752,47 +887,6 @@ def daily_stats():
     return jsonify(data)
 
 
-# ========== 间隔重复 ==========
-@app.route("/api/srs/due", methods=["GET"])
-def srs_due():
-    paper_id = request.args.get("paper_id", type=int)
-    limit = request.args.get("limit", 50, type=int)
-    cards = get_due_srs_cards(1, paper_id, limit)
-    return jsonify(cards)
-
-
-@app.route("/api/srs/review", methods=["POST"])
-def srs_review():
-    data = request.json
-    card_id = data.get("card_id")
-    quality = data.get("quality", 3)  # 0-5
-    result = review_srs_card(card_id, quality)
-    if result is None:
-        return jsonify({"error": "卡片不存在"}), 404
-    return jsonify({"status": "ok", **result})
-
-
-@app.route("/api/srs/stats", methods=["GET"])
-def srs_stats():
-    paper_id = request.args.get("paper_id", type=int)
-    return jsonify(get_srs_stats(1, paper_id))
-
-
-@app.route("/api/srs/add", methods=["POST"])
-def srs_add():
-    data = request.json
-    question_id = data.get("question_id")
-    if not question_id:
-        return jsonify({"error": "缺少题目ID"}), 400
-    add_question_to_srs(question_id)
-    return jsonify({"status": "ok"})
-
-
-# 提交答案时自动加入 SRS
-# 在 submit_answer() 函数中，题目的处理逻辑后追加：
-# add_question_to_srs(question_id)
-
-
 # ========== 图谱漫游 ==========
 @app.route("/api/graph/walk/start", methods=["POST"])
 def graph_walk_start():
@@ -812,6 +906,57 @@ def graph_walk_related():
         return jsonify({"error": "缺少知识点ID"}), 400
     related = get_related_knowledge(knowledge_id, paper_id)
     return jsonify(related)
+
+
+@app.route("/api/graph/walk/recommend", methods=["GET"])
+def graph_walk_recommend():
+    knowledge_id = request.args.get("knowledge_id", type=int)
+    paper_id = request.args.get("paper_id", type=int)
+    limit = request.args.get("limit", 5, type=int)
+    if not knowledge_id:
+        return jsonify({"error": "缺少知识点ID"}), 400
+    data = get_recommended_next(knowledge_id, paper_id, limit)
+    return jsonify(data)
+
+
+@app.route("/api/knowledge_points/by_paper", methods=["GET"])
+def knowledge_points_by_paper():
+    """获取指定试卷下使用到的知识点（通过知识图谱过滤）
+
+    - walkable=true：只返回有共现邻居的知识点（用于漫游起点）
+    - min_cooccur：共现次数下限，默认 1（由前端传入）
+    """
+    paper_id = request.args.get("paper_id", type=int)
+    walkable = request.args.get("walkable", "false").lower() == "true"
+    min_cooccur = request.args.get("min_cooccur", 1, type=int)
+
+    data = get_knowledge_graph_data(1, paper_id)
+    nodes = data.get("nodes", [])
+    edges = data.get("edges", [])
+
+    if walkable:
+        # 统计每个知识点的最大共现强度
+        cooccur_strength = {}
+        for e in edges:
+            w = e.get("weight", 0) or 0
+            if e.get("source") is not None:
+                cooccur_strength[e["source"]] = max(
+                    cooccur_strength.get(e["source"], 0), w
+                )
+            if e.get("target") is not None:
+                cooccur_strength[e["target"]] = max(
+                    cooccur_strength.get(e["target"], 0), w
+                )
+
+        kps = [
+            {"id": n["id"], "name": n["name"]}
+            for n in nodes
+            if cooccur_strength.get(n["id"], 0) >= min_cooccur
+        ]
+    else:
+        kps = [{"id": n["id"], "name": n["name"]} for n in nodes]
+
+    return jsonify(kps)
 
 
 if __name__ == "__main__":

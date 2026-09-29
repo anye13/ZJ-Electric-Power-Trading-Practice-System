@@ -344,4 +344,82 @@ defineExpose({ refresh: () => loadList(page.value) });
 .current-paper-label strong {
   color: var(--accent-blue);
 }
+
+@media (max-width: 768px) {
+  .manage-wrapper {
+    padding: 0;
+  }
+
+  .manage-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .manage-header h1 {
+    font-size: 20px;
+  }
+
+  .manage-actions {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .manage-actions .btn {
+    width: 100%;
+    font-size: 13px;
+  }
+
+  /* 工具栏纵向堆叠 */
+  .manage-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .manage-toolbar .btn {
+    width: 100%;
+  }
+
+  .current-paper-label {
+    font-size: 12px;
+    text-align: center;
+  }
+
+  .manage-toolbar select,
+  .manage-toolbar input[type="text"] {
+    width: 100%;
+  }
+
+  .search-input {
+    min-width: 0;
+    /* 关键：允许收缩 */
+  }
+
+  .per-page {
+    justify-content: space-between;
+  }
+
+  /* 表格横向滚动 */
+  .table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table {
+    min-width: 640px;
+  }
+
+  .ellipsis {
+    max-width: 180px;
+  }
+
+  .pagination {
+    justify-content: center;
+    gap: 6px;
+    font-size: 13px;
+  }
+}
 </style>

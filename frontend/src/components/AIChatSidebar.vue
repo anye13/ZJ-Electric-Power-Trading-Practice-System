@@ -199,4 +199,27 @@ watch(() => props.visible, (newVal) => {
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+@media (max-width: 768px) {
+    .chat-sidebar {
+        width: 100%;
+    }
+
+    .chat-header {
+        padding: 12px 16px;
+    }
+
+    .chat-messages {
+        padding: 12px;
+    }
+
+    .message .content {
+        max-width: 82%;
+        font-size: 14px;
+    }
+
+    .chat-input {
+        padding: 10px 12px;
+    }
+}
 </style>

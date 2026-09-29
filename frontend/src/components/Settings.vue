@@ -1,6 +1,55 @@
 <template>
     <div class="settings-container">
         <h2>⚙️ 设置</h2>
+        <!-- 数据库配置 -->
+        <div class="settings-card">
+            <h3>🗄️ 数据库配置</h3>
+            <p class="desc">
+                修改后会自动测试连接并保存到后端目录下的 <code>db_config.json</code>。
+                默认值来自 <code>config.py</code>，保存后立即生效。
+            </p>
+
+            <div class="db-grid">
+                <div class="db-field">
+                    <label>主机</label>
+                    <input type="text" v-model="dbForm.host" placeholder="localhost" />
+                </div>
+                <div class="db-field">
+                    <label>端口</label>
+                    <input type="number" v-model.number="dbForm.port" placeholder="3306" min="1" max="65535" />
+                </div>
+                <div class="db-field">
+                    <label>用户名</label>
+                    <input type="text" v-model="dbForm.user" placeholder="root" />
+                </div>
+                <div class="db-field">
+                    <label>密码</label>
+                    <input type="password" v-model="dbForm.password"
+                        :placeholder="dbMeta.has_password ? '不修改请留空' : '请输入密码'" />
+                </div>
+                <div class="db-field db-field-wide">
+                    <label>数据库名</label>
+                    <input type="text" v-model="dbForm.database" placeholder="exam_db" />
+                </div>
+            </div>
+
+            <div class="db-actions">
+                <button class="btn" @click="handleTestDb" :disabled="dbTesting">
+                    {{ dbTesting ? '测试中...' : '🔌 测试连接' }}
+                </button>
+                <button class="btn btn-primary" @click="handleSaveDb" :disabled="dbSaving">
+                    {{ dbSaving ? '保存中...' : '💾 保存配置' }}
+                </button>
+            </div>
+
+            <div v-if="dbTestMsg" class="db-msg" :class="dbTestOk ? 'db-ok' : 'db-err'">
+                {{ dbTestMsg }}
+            </div>
+
+            <p class="config-path" v-if="dbMeta.config_file">
+                配置文件：<code>{{ dbMeta.config_file }}</code>
+            </p>
+        </div>
         <div class="settings-card">
             <h3>练习试卷</h3>
             <div class="paper-setting">
@@ -53,8 +102,12 @@
                 <input type="number" v-model.number="cleanDays" min="1" max="365" />
                 <span>天</span>
                 <button class="btn btn-primary" @click="saveCleanDays">保存</button>
+                <button class="btn" @click="runCleanNow" :disabled="cleaning">
+                    {{ cleaning ? '清理中...' : '🧹 立即清理' }}
+                </button>
             </div>
             <div v-if="cleanDaysSaved" class="save-success">✅ 已保存，将在下次定时清理时生效</div>
+            <div v-if="cleanMsg" class="save-success">{{ cleanMsg }}</div>
         </div>
     </div>
 </template>
@@ -74,6 +127,9 @@ const cleanDaysSaved = ref(false);
 const papers = ref<Paper[]>([]);
 const selectedPaperId = ref<number | null>(null);
 const paperSaved = ref(false);
+const cleaning = ref(false);
+const cleanMsg = ref('');
+// ========== 数据库配置 ==========
 onMounted(async () => {
     // 加载模式
     const stored = localStorage.getItem('userMode');
@@ -93,6 +149,101 @@ onMounted(async () => {
     }
     loadPapers();
 });
+// ========== 数据库配置 ==========
+const dbForm = ref({
+    host: '',
+    user: '',
+    password: '',
+    database: '',
+    port: 3306,
+});
+const dbMeta = ref<{ has_password?: boolean; config_file?: string }>({});
+const dbTesting = ref(false);
+const dbSaving = ref(false);
+const dbTestMsg = ref('');
+const dbTestOk = ref(false);
+async function runCleanNow() {
+    if (!confirm(`确定按 ${cleanDays.value} 天阈值立即清理吗？\n超时的已答题目将恢复为未作答状态。`)) return;
+    cleaning.value = true;
+    cleanMsg.value = '';
+    try {
+        await api.cleanProgress(cleanDays.value);
+        cleanMsg.value = `✅ 已按 ${cleanDays.value} 天阈值清理完毕`;
+        setTimeout(() => { cleanMsg.value = ''; }, 3000);
+    } catch (e: any) {
+        cleanMsg.value = `❌ 清理失败：${e.response?.data?.error || e.message}`;
+    } finally {
+        cleaning.value = false;
+    }
+}
+async function loadDbConfig() {
+    try {
+        const cfg = await api.getDbConfig();
+        dbMeta.value = {
+            has_password: cfg.has_password,
+            config_file: cfg.config_file,
+        };
+        dbForm.value = {
+            host: cfg.host || '',
+            user: cfg.user || '',
+            password: '', // 不回显密码，留空表示不修改
+            database: cfg.database || '',
+            port: cfg.port || 3306,
+        };
+    } catch (e) {
+        console.error('加载数据库配置失败', e);
+    }
+}
+
+function buildDbPayload() {
+    const payload: any = {
+        host: dbForm.value.host,
+        user: dbForm.value.user,
+        database: dbForm.value.database,
+        port: dbForm.value.port,
+    };
+    // 只有用户输入了新密码才带上
+    if (dbForm.value.password && dbForm.value.password.length > 0) {
+        payload.password = dbForm.value.password;
+    }
+    return payload;
+}
+
+async function handleTestDb() {
+    dbTesting.value = true;
+    dbTestMsg.value = '';
+    try {
+        const res = await api.testDbConfig(buildDbPayload());
+        dbTestOk.value = !!res.success;
+        dbTestMsg.value = res.success ? '✅ 连接成功' : `❌ ${res.error || '连接失败'}`;
+    } catch (e: any) {
+        dbTestOk.value = false;
+        const err = e.response?.data?.error || e.message || '连接失败';
+        dbTestMsg.value = `❌ ${err}`;
+    } finally {
+        dbTesting.value = false;
+    }
+}
+
+async function handleSaveDb() {
+    if (!confirm('确定保存并应用新的数据库配置？\n保存后会立即尝试重新连接并重载题库。')) return;
+    dbSaving.value = true;
+    dbTestMsg.value = '';
+    try {
+        const res = await api.saveDbConfig(buildDbPayload());
+        dbTestOk.value = true;
+        dbTestMsg.value = `✅ ${res.message || '保存成功'}`;
+        // 密码框重置（下次再改需重新输入）
+        dbForm.value.password = '';
+        await loadDbConfig();
+    } catch (e: any) {
+        dbTestOk.value = false;
+        const err = e.response?.data?.error || e.message || '保存失败';
+        dbTestMsg.value = `❌ ${err}`;
+    } finally {
+        dbSaving.value = false;
+    }
+}
 async function loadPapers() {
     try {
         papers.value = await api.getPapers();
@@ -329,5 +480,191 @@ async function saveCleanDays() {
     color: var(--text-primary);
     border: 1px solid var(--border-color);
     border-radius: 6px;
+}
+
+.db-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 16px;
+    margin: 12px 0;
+    min-width: 0;
+}
+
+.db-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    /* 关键 1：允许收缩 */
+}
+
+.db-field-wide {
+    grid-column: 1 / -1;
+}
+
+.db-field label {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.db-field input {
+    width: 100%;
+    /* 关键 2：撑满格子 */
+    min-width: 0;
+    /* 关键 3：允许收缩，不撑破 */
+    box-sizing: border-box;
+    padding: 6px 10px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 14px;
+}
+
+.db-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.db-msg {
+    margin-top: 12px;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.db-ok {
+    background: rgba(63, 185, 80, 0.12);
+    color: var(--accent-green);
+    border-left: 3px solid var(--accent-green);
+}
+
+.db-err {
+    background: rgba(248, 81, 73, 0.12);
+    color: var(--accent-red);
+    border-left: 3px solid var(--accent-red);
+}
+
+.config-path {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    word-break: break-all;
+}
+
+.config-path code {
+    background: var(--bg-secondary);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+@media (max-width: 768px) {
+
+    /* 数据库配置卡片降为单列 */
+    .db-grid {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .db-field-wide {
+        grid-column: auto;
+    }
+
+    .db-field input {
+        font-size: 14px;
+        /* 防止 iOS 自动放大 */
+        padding: 8px 10px;
+    }
+
+    .db-actions {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .db-actions .btn {
+        width: 100%;
+    }
+
+    .config-path {
+        font-size: 11px;
+        word-break: break-all;
+    }
+
+    .settings-container {
+        margin: 16px auto;
+        padding: 0 12px;
+    }
+
+    .settings-container h2 {
+        font-size: 22px;
+        margin-bottom: 16px;
+    }
+
+    .settings-card {
+        padding: 16px;
+        margin-bottom: 16px;
+    }
+
+    .settings-card h3 {
+        font-size: 16px;
+    }
+
+    .settings-card .desc {
+        font-size: 13px;
+    }
+
+    .mode-options {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .mode-option {
+        min-width: 0;
+        flex-direction: row;
+        align-items: center;
+        gap: 12px;
+        padding: 14px;
+        text-align: left;
+    }
+
+    .mode-option .mode-icon {
+        font-size: 22px;
+    }
+
+    .mode-option .mode-name {
+        font-size: 15px;
+    }
+
+    .mode-option .mode-desc {
+        font-size: 12px;
+    }
+
+    .paper-setting,
+    .limit-setting,
+    .clean-setting {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+
+    .paper-setting select,
+    .limit-setting input[type="number"],
+    .clean-setting input[type="number"] {
+        width: 100%;
+    }
+
+    .limit-setting .unit,
+    .clean-setting span {
+        display: none;
+        /* 有 label 就够了 */
+    }
+
+    .limit-setting .btn,
+    .clean-setting .btn,
+    .paper-setting .btn {
+        width: 100%;
+    }
 }
 </style>

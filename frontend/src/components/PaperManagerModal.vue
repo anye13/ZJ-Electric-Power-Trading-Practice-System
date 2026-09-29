@@ -357,4 +357,52 @@ watch(
     font-size: 48px;
     margin-bottom: 12px;
 }
+
+@media (max-width: 768px) {
+    .modal-body {
+        padding: 14px;
+    }
+
+    .add-row {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .add-row .btn {
+        width: 100%;
+    }
+
+    /* 卡片内改纵向 */
+    .paper-item {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        padding: 12px;
+    }
+
+    .paper-info {
+        min-width: 0;
+    }
+
+    .paper-title {
+        font-size: 14px;
+    }
+
+    .paper-meta {
+        font-size: 11px;
+    }
+
+    .item-actions {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px;
+        flex-shrink: 1;
+    }
+
+    .item-actions .btn {
+        width: 100%;
+        font-size: 12px;
+        padding: 6px;
+    }
+}
 </style>

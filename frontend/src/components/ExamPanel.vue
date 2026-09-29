@@ -69,6 +69,8 @@
             <button @click="handleChop" class="btn btn-warning">⚡ 斩题</button>
             <button v-if="currentDisplayIndex === displayOrder.length - 1" @click="showRefreshModal = true"
               class="btn">获取新题</button>
+            <!-- 移动端答题卡按钮（桌面端隐藏） -->
+            <button class="btn mobile-only-btn" @click="mobileSheetOpen = true">📋 答题卡</button>
           </div>
 
           <!-- 底部区域：提交结果 (30%) -->
@@ -88,9 +90,17 @@
         </template>
 
       </div>
-
+      <!-- 移动端遮罩 -->
+      <transition name="fade">
+        <div v-if="mobileSheetOpen" class="sheet-mask" @click="mobileSheetOpen = false"></div>
+      </transition>
       <!-- 答题卡 -->
-      <div class="answer-sheet">
+      <!-- 答题卡：桌面端侧栏 / 移动端底部抽屉 -->
+      <div class="answer-sheet" :class="{ 'mobile-open': mobileSheetOpen }">
+        <!-- 移动端拖拽条 -->
+        <div class="sheet-handle" @click="mobileSheetOpen = false">
+          <span></span>
+        </div>
         <h3>答题卡</h3>
         <div class="sheet-content">
           <div v-for="group in groupedSheet" :key="group.type" class="sheet-group">
@@ -100,7 +110,7 @@
                 'is-wrong': item.is_wrong,
                 'submitted': item.submitted && !item.is_wrong,
                 'current': item.pos === store.currentPos,
-              }" @click="store.jumpTo(item.pos)">
+              }" @click="onSheetItemClick(item.pos)">
                 {{ item.displayNumber }}
               </span>
             </div>
@@ -184,7 +194,8 @@ const typeOrder = [
   'essay',
 ];
 const modeSelectDismissed = ref(false);
-
+// ========== 移动端答题卡抽屉 ==========
+const mobileSheetOpen = ref(false);
 // 按题型分组后的展示顺序（数组元素是 pos）
 const displayOrder = computed<number[]>(() => {
   const groups: Record<string, SheetItem[]> = {};
@@ -237,6 +248,13 @@ function formatMath(text: string): string {
   return text
     .replace(/\$\$(.*?)\$\$/g, (_, p1) => `\\(${p1}\\)`)   // 块级 → 行内
     .replace(/\$(.*?)\$/g, (_, p1) => `\\(${p1}\\)`);       // 行内 → 行内
+}
+async function onSheetItemClick(pos: number) {
+  await store.jumpTo(pos);
+  // 移动端点击题目后自动收起答题卡
+  if (window.innerWidth <= 768) {
+    mobileSheetOpen.value = false;
+  }
 }
 // 选择模式
 async function selectMode(useWrong: boolean) {
@@ -789,5 +807,194 @@ watch(() => [store.totalDisplay, store.filterWrong], ([newTotal, isWrong]) => {
   border-radius: 6px;
   font-size: 14px;
   cursor: pointer;
+}
+
+/* 移动端答题卡按钮默认隐藏 */
+.mobile-only-btn {
+  display: none;
+}
+
+/* 答题卡拖拽条默认隐藏 */
+.sheet-handle {
+  display: none;
+}
+
+/* 移动端遮罩默认隐藏 */
+.sheet-mask {
+  display: none;
+}
+
+/* 通用淡入淡出 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* ========== 移动端适配 ========== */
+@media (max-width: 768px) {
+  .exam-wrapper {
+    max-width: 100%;
+  }
+
+  .exam-header {
+    padding: 12px 16px;
+    gap: 10px;
+    flex-direction: column;
+    align-items: flex-start;
+    align-items: stretch;
+  }
+
+  .exam-title h1 {
+    font-size: 17px;
+  }
+
+  .exam-controls {
+    gap: 8px;
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .badge,
+  .mode-badge {
+    font-size: 12px;
+    padding: 2px 8px;
+  }
+
+  /* 主区域改为纵向堆叠，内容自然撑开 */
+  .exam-body {
+    display: block;
+    height: auto;
+    min-height: auto;
+    gap: 0;
+  }
+
+  .question-panel {
+    height: auto;
+    display: block;
+    overflow: visible;
+  }
+
+  /* 题干长公式溢出 */
+  .question-content {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  /* 结果区/解析区 */
+  .result-box {
+    padding: 12px;
+  }
+
+  .correct-answer {
+    font-size: 13px;
+    word-break: break-word;
+  }
+
+  .explanation-box {
+    font-size: 13px;
+    word-break: break-word;
+  }
+
+  .top-section,
+  .bottom-section {
+    flex: none;
+    overflow: visible;
+    padding: 16px;
+  }
+
+  .bottom-section {
+    border-top: 1px solid var(--border-color);
+  }
+
+  /* 操作按钮排两行，每行三个 */
+  .action-bar {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .action-bar .btn {
+    width: 100%;
+    font-size: 13px;
+    padding: 8px 4px;
+  }
+
+  .mobile-only-btn {
+    display: block;
+  }
+
+  /* 答题卡变为底部抽屉 */
+  .answer-sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    width: 100%;
+    max-height: 65vh;
+    height: auto;
+    border-radius: 16px 16px 0 0;
+    padding: 0 16px 16px;
+    transform: translateY(100%);
+    transition: transform 0.3s ease;
+    z-index: 300;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+    overflow-y: auto;
+  }
+
+  .answer-sheet.mobile-open {
+    transform: translateY(0);
+  }
+
+  .sheet-handle {
+    display: flex;
+    justify-content: center;
+    padding: 10px 0 6px;
+    cursor: pointer;
+  }
+
+  .sheet-handle span {
+    width: 42px;
+    height: 4px;
+    background: var(--border-color);
+    border-radius: 2px;
+  }
+
+  .answer-sheet h3 {
+    margin-top: 0;
+  }
+
+  .sheet-mask {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 299;
+  }
+
+  /* 移动端选项字号稍大，方便点按 */
+  .option-item {
+    padding: 10px 12px;
+  }
+
+  .option-item input[type="radio"],
+  .option-item input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+@media (max-width: 768px) {
+  .chat-sidebar {
+    width: 100%;
+  }
 }
 </style>

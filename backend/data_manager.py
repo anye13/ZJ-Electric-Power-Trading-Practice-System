@@ -10,15 +10,159 @@ from config import (
 )
 from datetime import datetime, timedelta, date
 import sys
+import re
+import jieba
+import os
+
+# 停用词（可按需扩展）
+STOP_WORDS = set(
+    [
+        "的",
+        "了",
+        "是",
+        "在",
+        "和",
+        "与",
+        "或",
+        "及",
+        "等",
+        "这",
+        "那",
+        "有",
+        "为",
+        "对",
+        "以",
+        "并",
+        "而",
+        "但",
+        "则",
+        "之",
+        "其",
+        "它",
+        "他",
+        "她",
+        "我",
+        "你",
+        "您",
+        "我们",
+        "你们",
+        "他们",
+        "一个",
+        "一种",
+        "以下",
+        "关于",
+        "根据",
+        "按照",
+        "下列",
+        "哪些",
+        "什么",
+        "哪个",
+        "属于",
+        "不属于",
+        "关于",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "and",
+        "or",
+        "not",
+        "with",
+        "by",
+        "as",
+        "at",
+        "from",
+        "that",
+        "this",
+        "which",
+    ]
+)
+# ============ 数据库配置文件（用户可覆盖 config.py 中的默认值） ============
+DB_CONFIG_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "db_config.json"
+)
+_db_config_cache = None
 
 
-def get_db():
+def _tokenize(text: str) -> set:
+    """使用 jieba 分词，返回去除停用词和标点后的词集合"""
+    if not text:
+        return set()
+    # 去除 LaTeX 定界符和多余空白
+    text = re.sub(r"\s+", "", text)
+    text = text.replace("$", "").replace("\\", "")
+    # 分词
+    tokens = jieba.lcut(text)
+    # 过滤停用词、标点、单字符、纯符号
+    result = set()
+    for tok in tokens:
+        tok = tok.strip().lower()
+        if not tok:
+            continue
+        if tok in STOP_WORDS:
+            continue
+        # 只保留中文字符、字母、数字组成的词
+        if re.match(r"^[\u4e00-\u9fa5a-z0-9]+$", tok):
+            result.add(tok)
+    return result
+
+
+def _load_db_config():
+    """读取数据库配置：优先 db_config.json，否则回落到 config.py 默认值"""
+    global _db_config_cache
+    if _db_config_cache is not None:
+        return _db_config_cache
+
+    cfg = {
+        "host": MYSQL_HOST,
+        "user": MYSQL_USER,
+        "password": MYSQL_PASSWORD,
+        "database": MYSQL_DB,
+        "port": int(MYSQL_PORT),
+    }
+    if os.path.exists(DB_CONFIG_FILE):
+        try:
+            with open(DB_CONFIG_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            for k in ("host", "user", "password", "database", "port"):
+                if saved.get(k) not in (None, ""):
+                    cfg[k] = int(saved[k]) if k == "port" else saved[k]
+        except Exception as e:
+            print(f"读取 db_config.json 失败，使用默认配置: {e}", file=sys.stderr)
+
+    _db_config_cache = cfg
+    return cfg
+
+
+def get_db_config():
+    """获取当前数据库配置（副本）"""
+    return dict(_load_db_config())
+
+
+def save_db_config(new_cfg):
+    """写入 db_config.json 并刷新缓存"""
+    global _db_config_cache
+    with open(DB_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(new_cfg, f, ensure_ascii=False, indent=2)
+    _db_config_cache = None
+    print("✅ 数据库配置已保存到 db_config.json", file=sys.stderr)
+
+
+def get_db(override=None):
+    """获取数据库连接。override 用于测试连接而不修改全局配置。"""
+    cfg = override if override else _load_db_config()
     return pymysql.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DB,
-        port=MYSQL_PORT,
+        host=cfg["host"],
+        user=cfg["user"],
+        password=cfg["password"],
+        database=cfg["database"],
+        port=int(cfg["port"]),
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
     )
@@ -93,22 +237,6 @@ def init_db():
                     PRIMARY KEY (question_id, knowledge_id),
                     FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE,
                     FOREIGN KEY (knowledge_id) REFERENCES knowledge_points(id) ON DELETE CASCADE
-                )
-            """)
-            # 间隔重复卡片表
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS srs_cards (
-                    id INT PRIMARY KEY AUTO_INCREMENT,
-                    user_id INT DEFAULT 1,
-                    question_id INT NOT NULL,
-                    ease_factor FLOAT DEFAULT 2.5,
-                    interval_days INT DEFAULT 0,
-                    repetitions INT DEFAULT 0,
-                    due_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_reviewed_at TIMESTAMP NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE KEY unique_user_question (user_id, question_id),
-                    FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
                 )
             """)
 
@@ -318,7 +446,34 @@ def delete_question(qid):
         conn.close()
 
 
-def update_question(qid, data):
+def update_question(qid, data, threshold=0.85):
+    """更新题目，先排除自身后做相似度检查
+    返回 (success, error_message, existing_id)
+    """
+    content = data["content"]
+    # 获取该题所属试卷
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT paper_id FROM questions WHERE id = %s", (qid,))
+            row = cursor.fetchone()
+            if not row:
+                return False, "题目不存在", None
+            paper_id = row["paper_id"]
+    finally:
+        conn.close()
+
+    # 相似度检查（排除自身）
+    similar = find_similar_question(
+        content, paper_id=paper_id, exclude_id=qid, threshold=threshold
+    )
+    if similar is not None:
+        return (
+            False,
+            f"与已有题目 #{similar[0]} 高度相似（{similar[2]*100:.1f}%）",
+            similar[0],
+        )
+
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -329,7 +484,7 @@ def update_question(qid, data):
                    WHERE id=%s""",
                 (
                     data["type"],
-                    data["content"],
+                    content,
                     json.dumps(data.get("options", [])),
                     json.dumps(data["answer"]),
                     data.get("explanation", ""),
@@ -338,18 +493,17 @@ def update_question(qid, data):
                 ),
             )
         conn.commit()
+        return True, None, None
     finally:
         conn.close()
 
 
-def import_from_json_data(data, paper_id=None):
-    """追加导入，去重基于 content+options，ID自动生成，支持知识点关联
-    paper_id: 指定导入到哪张试卷；若为 None，则使用第一张试卷或创建默认试卷
-    """
+def import_from_json_data(data, paper_id=None, threshold=0.85):
+    """追加导入，使用 jieba + Jaccard 相似度去重（默认阈值 0.85）"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
-            # 若未指定 paper_id，则获取第一张试卷或创建
+            # 获取或创建 paper_id
             if paper_id is None:
                 cursor.execute("SELECT id FROM paper_info ORDER BY id LIMIT 1")
                 paper_row = cursor.fetchone()
@@ -369,16 +523,54 @@ def import_from_json_data(data, paper_id=None):
                 else:
                     paper_id = paper_row["id"]
 
-            # 以下逻辑不变
-            cursor.execute("SELECT content, options FROM questions")
-            existing = cursor.fetchall()
-            existing_keys = {(row["content"], row["options"]) for row in existing}
+            # 预加载该试卷下已有题目的分词集合
+            cursor.execute(
+                "SELECT id, content FROM questions WHERE paper_id = %s",
+                (paper_id,),
+            )
+            existing_rows = cursor.fetchall()
+            existing_sets = []
+            for row in existing_rows:
+                tokens = _tokenize(row["content"])
+                if tokens:
+                    existing_sets.append((row["id"], tokens))
 
             added = 0
             skipped = 0
+            added_sets = []  # 本次导入中已添加的，防止内部重复
+
             for q in data["questions"]:
-                key = (q["content"], json.dumps(q.get("options", []), sort_keys=True))
-                if key in existing_keys:
+                content = q["content"]
+                new_set = _tokenize(content)
+
+                if not new_set:
+                    # 分词后无有效词，退回直接添加
+                    is_dup = False
+                else:
+                    is_dup = False
+                    # 1. 与数据库中已有题目对比
+                    for _, old_set in existing_sets:
+                        len_ratio = min(len(new_set), len(old_set)) / max(
+                            len(new_set), len(old_set)
+                        )
+                        if len_ratio < 0.5:
+                            continue
+                        if jaccard_similarity(new_set, old_set) >= threshold:
+                            is_dup = True
+                            break
+                    # 2. 与本次导入中已添加的对比
+                    if not is_dup:
+                        for old_set in added_sets:
+                            len_ratio = min(len(new_set), len(old_set)) / max(
+                                len(new_set), len(old_set)
+                            )
+                            if len_ratio < 0.5:
+                                continue
+                            if jaccard_similarity(new_set, old_set) >= threshold:
+                                is_dup = True
+                                break
+
+                if is_dup:
                     skipped += 1
                     continue
 
@@ -388,7 +580,7 @@ def import_from_json_data(data, paper_id=None):
                        VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                     (
                         q["type"],
-                        q["content"],
+                        content,
                         json.dumps(q.get("options", [])),
                         json.dumps(q["answer"]),
                         q.get("explanation", ""),
@@ -399,10 +591,9 @@ def import_from_json_data(data, paper_id=None):
                 qid = cursor.lastrowid
                 added += 1
 
-                # 知识点处理（不变）
+                # 知识点处理
                 knowledge_names = q.get("knowledge", [])
                 if knowledge_names:
-                    knowledge_ids = []
                     for kname in knowledge_names:
                         kname = kname.strip()
                         if not kname:
@@ -419,15 +610,13 @@ def import_from_json_data(data, paper_id=None):
                                 (kname,),
                             )
                             kid = cursor.lastrowid
-                        knowledge_ids.append(kid)
-                    if knowledge_ids:
-                        for kid in knowledge_ids:
-                            cursor.execute(
-                                "INSERT INTO question_knowledge (question_id, knowledge_id) VALUES (%s, %s)",
-                                (qid, kid),
-                            )
+                        cursor.execute(
+                            "INSERT INTO question_knowledge (question_id, knowledge_id) VALUES (%s, %s)",
+                            (qid, kid),
+                        )
 
-                existing_keys.add(key)
+                if new_set:
+                    added_sets.append(new_set)
 
             conn.commit()
             return added, skipped
@@ -518,19 +707,30 @@ def get_questions_page(
         conn.close()
 
 
-def create_question_in_db(data):
-    """插入新题目，返回自增ID"""
+def create_question_in_db(data, threshold=0.85):
+    """插入新题目，先做相似度去重
+    返回 (qid, is_duplicate, existing_id, similarity)
+    - 若插入成功：is_duplicate=False, qid=新ID
+    - 若检测到相似：is_duplicate=True, qid=None, existing_id=相似题ID
+    """
+    content = data["content"]
+    paper_id = data.get("paper_id", 1)
+
+    # 相似度检查
+    similar = find_similar_question(content, paper_id=paper_id, threshold=threshold)
+    if similar is not None:
+        return None, True, similar[0], similar[2]
+
     conn = get_db()
     try:
         with conn.cursor() as cursor:
-            paper_id = data.get("paper_id", 1)
             cursor.execute(
                 """INSERT INTO questions
                    (type, content, options, answer, explanation, steps, paper_id)
                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                 (
                     data["type"],
-                    data["content"],
+                    content,
                     json.dumps(data.get("options", [])),
                     json.dumps(data["answer"]),
                     data.get("explanation", ""),
@@ -539,7 +739,7 @@ def create_question_in_db(data):
                 ),
             )
             conn.commit()
-            return cursor.lastrowid
+            return cursor.lastrowid, False, None, 0.0
     finally:
         conn.close()
 
@@ -1338,171 +1538,6 @@ def get_daily_stats(user_id, year=None, month=None, paper_id=None):
         conn.close()
 
 
-def add_question_to_srs(question_id, user_id=1):
-    """将题目加入间隔重复系统（立即到期）"""
-    conn = get_db()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT IGNORE INTO srs_cards (user_id, question_id, due_date)
-                VALUES (%s, %s, NOW())
-            """,
-                (user_id, question_id),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def get_due_srs_cards(user_id=1, paper_id=None, limit=50):
-    """获取今日待复习的题目"""
-    conn = get_db()
-    try:
-        with conn.cursor() as cursor:
-            sql = """
-                SELECT c.id AS card_id, c.question_id, c.ease_factor, c.interval_days,
-                       c.repetitions, c.due_date,
-                       q.type, q.content, q.options, q.answer, q.explanation, q.steps, q.paper_id
-                FROM srs_cards c
-                JOIN questions q ON c.question_id = q.id
-                WHERE c.user_id = %s AND c.due_date <= NOW()
-            """
-            params = [user_id]
-            if paper_id is not None:
-                sql += " AND q.paper_id = %s"
-                params.append(paper_id)
-            sql += " ORDER BY c.due_date ASC, c.ease_factor ASC LIMIT %s"
-            params.append(limit)
-            cursor.execute(sql, params)
-            rows = cursor.fetchall()
-            cards = []
-            for row in rows:
-                cards.append(
-                    {
-                        "card_id": row["card_id"],
-                        "question_id": row["question_id"],
-                        "type": row["type"],
-                        "content": row["content"],
-                        "options": json.loads(row["options"]) if row["options"] else [],
-                        "answer": json.loads(row["answer"]) if row["answer"] else None,
-                        "explanation": row["explanation"] or "",
-                        "steps": json.loads(row["steps"]) if row["steps"] else [],
-                        "ease_factor": row["ease_factor"],
-                        "interval_days": row["interval_days"],
-                        "repetitions": row["repetitions"],
-                    }
-                )
-            return cards
-    finally:
-        conn.close()
-
-
-def review_srs_card(card_id, quality, user_id=1):
-    """SM-2 算法复习一张卡片"""
-    conn = get_db()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "SELECT ease_factor, interval_days, repetitions FROM srs_cards WHERE id = %s AND user_id = %s",
-                (card_id, user_id),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-
-            ef = row["ease_factor"]
-            interval = row["interval_days"]
-            reps = row["repetitions"]
-
-            if quality < 3:
-                reps = 0
-                interval = 1
-            else:
-                if reps == 0:
-                    interval = 1
-                elif reps == 1:
-                    interval = 6
-                else:
-                    interval = round(interval * ef)
-                reps += 1
-
-            ef = ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
-            if ef < 1.3:
-                ef = 1.3
-
-            # 用 datetime.now() + timedelta
-            due_datetime = datetime.now() + timedelta(days=interval)
-
-            cursor.execute(
-                """
-                UPDATE srs_cards SET
-                    ease_factor = %s,
-                    interval_days = %s,
-                    repetitions = %s,
-                    due_date = %s,
-                    last_reviewed_at = NOW()
-                WHERE id = %s
-            """,
-                (ef, interval, reps, due_datetime, card_id),
-            )
-        conn.commit()
-        return {
-            "ease_factor": ef,
-            "interval_days": interval,
-            "repetitions": reps,
-            "due_date": due_datetime.isoformat(),
-        }
-    finally:
-        conn.close()
-
-
-def get_srs_stats(user_id=1, paper_id=None):
-    """SRS 复习统计"""
-    conn = get_db()
-    try:
-        with conn.cursor() as cursor:
-            base_sql = """
-                FROM srs_cards c
-                JOIN questions q ON c.question_id = q.id
-                WHERE c.user_id = %s
-            """
-            params = [user_id]
-            if paper_id is not None:
-                base_sql += " AND q.paper_id = %s"
-                params.append(paper_id)
-
-            cursor.execute(f"SELECT COUNT(*) as total {base_sql}", params)
-            total = cursor.fetchone()["total"]
-
-            # due_date <= NOW() 表示已到期
-            cursor.execute(
-                f"SELECT COUNT(*) as due {base_sql} AND c.due_date <= NOW()", params
-            )
-            due = cursor.fetchone()["due"]
-
-            # 今日已复习：DATE(last_reviewed_at) = CURDATE()
-            cursor.execute(
-                f"SELECT COUNT(*) as today_reviewed {base_sql} AND DATE(c.last_reviewed_at) = CURDATE()",
-                params,
-            )
-            today_reviewed = cursor.fetchone()["today_reviewed"]
-
-            cursor.execute(
-                f"SELECT COUNT(*) as mastered {base_sql} AND c.repetitions >= 3", params
-            )
-            mastered = cursor.fetchone()["mastered"]
-
-            return {
-                "total": total,
-                "due": due,
-                "today_reviewed": today_reviewed,
-                "mastered": mastered,
-            }
-    finally:
-        conn.close()
-
-
 def start_graph_walk(knowledge_id, user_id=1):
     """从某知识点开始漫游"""
     conn = get_db()
@@ -1556,5 +1591,187 @@ def get_related_knowledge(knowledge_id, paper_id=None, limit=10):
                     (knowledge_id, knowledge_id, limit),
                 )
             return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def jaccard_similarity(set1: set, set2: set) -> float:
+    """计算两个集合的 Jaccard 相似度"""
+    if not set1 or not set2:
+        return 0.0
+    intersection = set1 & set2
+    union = set1 | set2
+    if not union:
+        return 0.0
+    return len(intersection) / len(union)
+
+
+def is_similar_question(content1: str, content2: str, threshold: float = 0.85) -> bool:
+    """判断两个题目是否相似（基于 jieba 分词 + Jaccard）"""
+    s1 = _tokenize(content1)
+    s2 = _tokenize(content2)
+    if not s1 or not s2:
+        return False
+    # 长度差过大直接判不相似（性能优化）
+    len_ratio = min(len(s1), len(s2)) / max(len(s1), len(s2))
+    if len_ratio < 0.5:
+        return False
+    return jaccard_similarity(s1, s2) >= threshold
+
+
+def find_similar_question(
+    content: str, paper_id=None, exclude_id=None, threshold: float = 0.85
+):
+    """在指定试卷（或全部）中查找与给定内容相似的题目
+    返回：(existing_id, existing_content, similarity) 或 None
+    """
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            sql = "SELECT id, content FROM questions"
+            params = []
+            conditions = []
+            if paper_id is not None:
+                conditions.append("paper_id = %s")
+                params.append(paper_id)
+            if exclude_id is not None:
+                conditions.append("id != %s")
+                params.append(exclude_id)
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+
+            new_set = _tokenize(content)
+            if not new_set:
+                return None
+
+            best = None
+            for row in rows:
+                old_set = _tokenize(row["content"])
+                if not old_set:
+                    continue
+                len_ratio = min(len(new_set), len(old_set)) / max(
+                    len(new_set), len(old_set)
+                )
+                if len_ratio < 0.5:
+                    continue
+                sim = jaccard_similarity(new_set, old_set)
+                if sim >= threshold:
+                    if best is None or sim > best[2]:
+                        best = (row["id"], row["content"], sim)
+            return best
+    finally:
+        conn.close()
+
+
+def get_recommended_next(knowledge_id, paper_id=None, limit=5):
+    """基于共现次数 + 错题数 + 错题率，推荐下一站知识点。
+
+    score = cooccur * 1.0 + wrong_count * 2.0 + wrong_rate * 5.0
+    """
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            # 1. 找出与当前知识点共现的所有知识点
+            if paper_id is not None:
+                cursor.execute(
+                    """
+                    SELECT k.id, k.name,
+                           COUNT(DISTINCT qk1.question_id) AS cooccur
+                    FROM question_knowledge qk1
+                    JOIN question_knowledge qk2
+                        ON qk1.question_id = qk2.question_id
+                        AND qk2.knowledge_id != qk1.knowledge_id
+                    JOIN knowledge_points k ON k.id = qk2.knowledge_id
+                    JOIN questions q ON qk1.question_id = q.id
+                    WHERE qk1.knowledge_id = %s AND q.paper_id = %s
+                    GROUP BY k.id, k.name
+                    """,
+                    (knowledge_id, paper_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT k.id, k.name,
+                           COUNT(DISTINCT qk1.question_id) AS cooccur
+                    FROM question_knowledge qk1
+                    JOIN question_knowledge qk2
+                        ON qk1.question_id = qk2.question_id
+                        AND qk2.knowledge_id != qk1.knowledge_id
+                    JOIN knowledge_points k ON k.id = qk2.knowledge_id
+                    WHERE qk1.knowledge_id = %s
+                    GROUP BY k.id, k.name
+                    """,
+                    (knowledge_id,),
+                )
+            rows = cursor.fetchall()
+
+            candidates = []
+            for row in rows:
+                kid = row["id"]
+                # 2. 该知识点下的总题数 & 错题数
+                if paper_id is not None:
+                    cursor.execute(
+                        """
+                        SELECT COUNT(DISTINCT qk.question_id) AS total,
+                               COUNT(DISTINCT w.question_id) AS wrong
+                        FROM question_knowledge qk
+                        JOIN questions q ON qk.question_id = q.id
+                        LEFT JOIN wrong_questions w
+                            ON w.question_id = qk.question_id AND w.user_id = 1
+                        WHERE qk.knowledge_id = %s AND q.paper_id = %s
+                        """,
+                        (kid, paper_id),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT COUNT(DISTINCT qk.question_id) AS total,
+                               COUNT(DISTINCT w.question_id) AS wrong
+                        FROM question_knowledge qk
+                        LEFT JOIN wrong_questions w
+                            ON w.question_id = qk.question_id AND w.user_id = 1
+                        WHERE qk.knowledge_id = %s
+                        """,
+                        (kid,),
+                    )
+                stats = cursor.fetchone()
+                total = stats["total"] or 0
+                wrong = stats["wrong"] or 0
+
+                cooccur = row["cooccur"] or 0
+                wrong_rate = (wrong / total) if total > 0 else 0.0
+
+                # 3. 综合评分
+                score = cooccur * 1.0 + wrong * 2.0 + wrong_rate * 5.0
+
+                # 4. 推荐理由
+                reasons = []
+                if cooccur > 0:
+                    reasons.append(f"共现 {cooccur} 次")
+                if wrong > 0:
+                    reasons.append(f"错题 {wrong} 道")
+                if total > 0 and wrong_rate >= 0.5:
+                    reasons.append("掌握度较低")
+                if not reasons:
+                    reasons.append("相关知识")
+
+                candidates.append(
+                    {
+                        "id": kid,
+                        "name": row["name"],
+                        "cooccur": cooccur,
+                        "wrong_count": wrong,
+                        "total": total,
+                        "wrong_rate": round(wrong_rate * 100, 1),
+                        "score": round(score, 2),
+                        "reason": "，".join(reasons),
+                    }
+                )
+
+            # 5. 按分数降序取前 N
+            candidates.sort(key=lambda x: -x["score"])
+            return candidates[:limit]
     finally:
         conn.close()
