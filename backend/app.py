@@ -37,40 +37,6 @@ except Exception as e:
     print(f"⚠️ 启动清理失败（不影响应用启动）: {e}", file=sys.stderr)
 
 
-def build_ai_client(provider):
-    """根据 provider 配置构建客户端，返回 (client, model)"""
-    ptype = (provider.get("provider") or "zhipu").lower()
-    api_key = provider.get("api_key", "")
-    model = provider.get("model") or ZHIPU_MODEL
-    base_url = provider.get("base_url") or None
-
-    if ptype == "zhipu":
-        return ZhipuAiClient(api_key=api_key), model
-
-    if ptype == "openai":
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise RuntimeError(
-                "使用 OpenAI 兼容 provider 需安装依赖：pip install openai"
-            )
-        kwargs = {"api_key": api_key}
-        if base_url:
-            kwargs["base_url"] = base_url
-        return OpenAI(**kwargs), model
-
-    raise ValueError(f"不支持的 provider 类型：{ptype}")
-
-
-def get_active_ai_client():
-    provider = get_active_ai_provider()
-    if not provider:
-        raise RuntimeError("尚未配置任何 AI Provider，请前往设置页添加")
-    if not provider.get("api_key"):
-        raise RuntimeError("当前 Provider 缺少 API Key")
-    return build_ai_client(provider)
-
-
 # ------------------------- 全局状态类 -------------------------
 class ExamState:
 
@@ -241,6 +207,91 @@ class ExamState:
             "items": items,
             "current_pos": self.current_pos,
         }
+
+
+class AIClient:
+    """统一的 AI 客户端，屏蔽不同 SDK 的差异，对外只暴露 chat() 方法"""
+
+    def __init__(self, provider: dict):
+        self.provider = provider or {}
+        self.api_key = self.provider.get("api_key") or ""
+        self.model = self.provider.get("model") or ""
+        self.base_url = self.provider.get("base_url") or ""
+        self.sdk = (self.provider.get("sdk") or self._infer_sdk()).lower()
+        self._client = self._build_client()
+
+    def _infer_sdk(self) -> str:
+        """兼容老数据：只有 provider 字段时推断 sdk"""
+        ptype = (self.provider.get("provider") or "zhipu").lower()
+        if ptype == "zhipu":
+            return "zhipu"
+        if ptype == "anthropic":
+            return "anthropic"
+        return "openai"
+
+    def _build_client(self):
+        if not self.api_key:
+            raise RuntimeError("缺少 API Key")
+
+        if self.sdk == "zhipu":
+            return ZhipuAiClient(api_key=self.api_key)
+
+        if self.sdk == "openai":
+            try:
+                from openai import OpenAI
+            except ImportError:
+                raise RuntimeError("请先安装依赖：pip install openai")
+            kwargs = {"api_key": self.api_key}
+            if self.base_url:
+                kwargs["base_url"] = self.base_url
+            return OpenAI(**kwargs)
+
+        if self.sdk == "anthropic":
+            try:
+                from anthropic import Anthropic
+            except ImportError:
+                raise RuntimeError("请先安装依赖：pip install anthropic")
+            return Anthropic(api_key=self.api_key)
+
+        raise ValueError(f"不支持的 SDK 类型：{self.sdk}")
+
+    def chat(self, messages, max_tokens=4096, temperature=0.7) -> str:
+        """返回助手回复的纯文本"""
+        # Anthropic 的 system 需单独传，接口格式也不同
+        if self.sdk == "anthropic":
+            system_parts = []
+            chat_msgs = []
+            for m in messages:
+                if m.get("role") == "system":
+                    system_parts.append(m.get("content", ""))
+                else:
+                    chat_msgs.append(m)
+            resp = self._client.messages.create(
+                model=self.model,
+                system="\n".join(system_parts).strip() or None,
+                messages=chat_msgs,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            if not resp.content:
+                return ""
+            return getattr(resp.content[0], "text", "") or ""
+
+        # zhipu 与 openai 的调用格式一致
+        resp = self._client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return resp.choices[0].message.content or ""
+
+
+def get_active_ai_client() -> AIClient:
+    provider = get_active_ai_provider()
+    if not provider:
+        raise RuntimeError("尚未配置任何 AI Provider，请前往设置页添加")
+    return AIClient(provider)
 
 
 state = ExamState()
@@ -629,9 +680,8 @@ def chat():
         return jsonify({"error": "消息不能为空"}), 400
 
     try:
-        client, model = get_active_ai_client()
-        response = client.chat.completions.create(
-            model=model,
+        ai = get_active_ai_client()
+        reply = ai.chat(
             messages=[
                 {
                     "role": "system",
@@ -642,11 +692,43 @@ def chat():
             max_tokens=4096,
             temperature=0.7,
         )
-        reply = response.choices[0].message.content
         return jsonify({"reply": reply})
     except Exception as e:
         print(f"AI 对话失败: {e}", file=sys.stderr)
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ai_config/test", methods=["POST"])
+def test_ai_config():
+    """测试指定/当前激活的 Provider；可临时覆盖 api_key 进行测试"""
+    data = request.json or {}
+    provider_id = data.get("id")
+
+    if provider_id:
+        cfg = get_ai_config(mask_key=False)
+        provider = next(
+            (p for p in cfg["providers"] if p.get("id") == provider_id), None
+        )
+        if not provider:
+            return jsonify({"success": False, "error": "Provider 不存在"}), 404
+        if data.get("api_key"):
+            provider = {**provider, "api_key": data["api_key"]}
+    else:
+        provider = get_active_ai_provider()
+
+    if not provider or not provider.get("api_key"):
+        return jsonify({"success": False, "error": "缺少 API Key"}), 400
+
+    try:
+        ai = AIClient(provider)
+        reply = ai.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=16,
+            temperature=0.2,
+        )
+        return jsonify({"success": True, "reply": (reply or "")[:80]})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
 
 # 管理接口
@@ -830,6 +912,11 @@ def get_ai_config_route():
     return jsonify(get_ai_config(mask_key=True))
 
 
+@app.route("/api/ai_config/presets", methods=["GET"])
+def get_ai_presets_route():
+    return jsonify(get_ai_provider_presets())
+
+
 @app.route("/api/ai_config/providers", methods=["POST"])
 def add_ai_provider_route():
     data = request.json or {}
@@ -838,11 +925,19 @@ def add_ai_provider_route():
     if not data.get("api_key"):
         return jsonify({"error": "API Key 不能为空"}), 400
 
+    ptype = (data.get("provider") or "zhipu").strip()
+    # 从预置表里找对应 sdk
+    sdk = data.get("sdk") or next(
+        (p["sdk"] for p in AI_PROVIDER_PRESETS if p["type"] == ptype),
+        "openai",
+    )
+
     provider = {
         "name": data["name"].strip(),
-        "provider": (data.get("provider") or "zhipu").strip(),
+        "provider": ptype,
+        "sdk": sdk,
         "api_key": data["api_key"].strip(),
-        "model": (data.get("model") or "glm-4.7-flash").strip(),
+        "model": (data.get("model") or "").strip(),
         "base_url": (data.get("base_url") or "").strip(),
         "retry_count": int(data.get("retry_count", 7)),
         "retry_delay": int(data.get("retry_delay", 2)),
@@ -860,6 +955,7 @@ def update_ai_provider_route(provider_id):
     allowed = {
         "name",
         "provider",
+        "sdk",
         "api_key",
         "model",
         "base_url",
@@ -900,40 +996,6 @@ def set_active_ai_route():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
-
-
-@app.route("/api/ai_config/test", methods=["POST"])
-def test_ai_config():
-    """测试指定/当前激活的 Provider；可临时覆盖 api_key 进行测试"""
-    data = request.json or {}
-    provider_id = data.get("id")
-
-    if provider_id:
-        cfg = get_ai_config(mask_key=False)
-        provider = next(
-            (p for p in cfg["providers"] if p.get("id") == provider_id), None
-        )
-        if not provider:
-            return jsonify({"success": False, "error": "Provider 不存在"}), 404
-        if data.get("api_key"):
-            provider = {**provider, "api_key": data["api_key"]}
-    else:
-        provider = get_active_ai_provider()
-
-    if not provider or not provider.get("api_key"):
-        return jsonify({"success": False, "error": "缺少 API Key"}), 400
-
-    try:
-        client, model = build_ai_client(provider)
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=16,
-        )
-        reply = response.choices[0].message.content or ""
-        return jsonify({"success": True, "reply": reply[:80]})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 400
 
 
 # ------------------------- 试卷管理 -------------------------

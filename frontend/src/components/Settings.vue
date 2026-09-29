@@ -103,9 +103,10 @@
                     </div>
                     <div class="db-field">
                         <label>类型</label>
-                        <select v-model="aiForm.provider">
-                            <option value="zhipu">智谱 GLM</option>
-                            <option value="openai">OpenAI 兼容</option>
+                        <select v-model="aiForm.provider" @change="onAiTypeChange">
+                            <option v-for="p in aiPresets" :key="p.type" :value="p.type">
+                                {{ p.name }}
+                            </option>
                         </select>
                     </div>
                     <div class="db-field db-field-wide">
@@ -117,9 +118,16 @@
                         <label>模型名</label>
                         <input type="text" v-model="aiForm.model" placeholder="glm-4.7-flash" />
                     </div>
-                    <div class="db-field">
+                    <div class="db-field db-field-wide">
                         <label>Base URL（OpenAI 兼容时填）</label>
                         <input type="text" v-model="aiForm.base_url" placeholder="https://api.deepseek.com/v1" />
+                        <div v-if="aiPresets.find(p => p.type === aiForm.provider)?.docs" class="hint-text">
+                            官方申请：
+                            <a :href="aiPresets.find(p => p.type === aiForm.provider)!.docs" target="_blank"
+                                rel="noopener">
+                                {{aiPresets.find(p => p.type === aiForm.provider)!.docs}}
+                            </a>
+                        </div>
                     </div>
                     <div class="db-field">
                         <label>重试次数</label>
@@ -209,7 +217,7 @@
 import { ref, onMounted } from 'vue';
 import { useExamStore } from '@/stores/exam';
 import * as api from '@/api';
-import type { AiConfig } from '@/api';
+import type { AiConfig, AiProviderPreset } from '@/api';
 import type { Paper } from '@/types';
 const store = useExamStore();
 const limit = ref(20);
@@ -224,6 +232,7 @@ const paperSaved = ref(false);
 const cleaning = ref(false);
 const cleanMsg = ref('');
 const aiConfig = ref<AiConfig>({ active_id: null, providers: [] });
+const aiPresets = ref<AiProviderPreset[]>([]);
 const aiFormVisible = ref(false);
 const aiEditingId = ref<string | null>(null);
 const aiForm = ref({
@@ -238,8 +247,28 @@ const aiForm = ref({
 const aiSaving = ref(false);
 const aiMessage = ref('');
 const aiMessageOk = ref(false);
+/** 按 type 展示中文名 */
 function providerTypeName(t: string) {
-    return t === 'zhipu' ? '智谱 GLM' : t === 'openai' ? 'OpenAI 兼容' : t;
+    const preset = aiPresets.value.find(p => p.type === t);
+    return preset ? preset.name : t;
+}
+async function loadAiPresets() {
+    try {
+        aiPresets.value = await api.getAiProviderPresets();
+    } catch (e) {
+        console.error('加载 AI 预置表失败', e);
+    }
+}
+/** 用户切换 provider 类型时自动填充模型和 Base URL（仅当对应字段为空） */
+function onAiTypeChange() {
+    const preset = aiPresets.value.find(p => p.type === aiForm.value.provider);
+    if (!preset) return;
+    if (!aiForm.value.model && preset.default_model) {
+        aiForm.value.model = preset.default_model;
+    }
+    if (!aiForm.value.base_url && preset.default_base_url) {
+        aiForm.value.base_url = preset.default_base_url;
+    }
 }
 
 async function loadAiConfig() {
@@ -252,12 +281,14 @@ async function loadAiConfig() {
 
 function openAddAi() {
     aiEditingId.value = null;
+    const first = aiPresets.value[0];
     aiForm.value = {
         name: '',
-        provider: 'zhipu',
+        provider: first?.type || 'zhipu',
+        sdk: first?.sdk || 'zhipu',
         api_key: '',
-        model: 'glm-4.7-flash',
-        base_url: '',
+        model: first?.default_model || '',
+        base_url: first?.default_base_url || '',
         retry_count: 7,
         retry_delay: 2,
     };
@@ -270,7 +301,8 @@ function openEditAi(p: any) {
     aiForm.value = {
         name: p.name || '',
         provider: p.provider || 'zhipu',
-        api_key: '', // 留空表示不修改
+        sdk: p.sdk || 'zhipu',
+        api_key: '',
         model: p.model || '',
         base_url: p.base_url || '',
         retry_count: p.retry_count ?? 7,
@@ -371,6 +403,7 @@ onMounted(async () => {
     }
     loadPapers();
     await loadAiConfig();
+    await loadAiPresets();
 });
 // ========== 数据库配置 ==========
 const dbForm = ref({
@@ -992,5 +1025,21 @@ async function saveCleanDays() {
     .ai-form {
         padding: 12px;
     }
+}
+
+.hint-text {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    word-break: break-all;
+}
+
+.hint-text a {
+    color: var(--accent-blue);
+    text-decoration: none;
+}
+
+.hint-text a:hover {
+    text-decoration: underline;
 }
 </style>

@@ -169,7 +169,8 @@ export const cleanProgress = (days?: number) =>
 export interface AiProvider {
     id: string;
     name: string;
-    provider: 'zhipu' | 'openai' | string;
+    provider: string;
+    sdk?: 'zhipu' | 'openai' | 'anthropic';
     api_key_masked?: string;
     has_api_key?: boolean;
     model: string;
@@ -200,3 +201,14 @@ export const setActiveAiProvider = (id: string) =>
 
 export const testAiProvider = (id?: string, apiKey?: string) =>
     api.post('/ai_config/test', { id, api_key: apiKey }).then(res => res.data);
+export interface AiProviderPreset {
+    type: string;
+    name: string;
+    sdk: 'zhipu' | 'openai' | 'anthropic';
+    default_model: string;
+    default_base_url: string;
+    docs: string;
+}
+
+export const getAiProviderPresets = (): Promise<AiProviderPreset[]> =>
+    api.get('/ai_config/presets').then(res => res.data);

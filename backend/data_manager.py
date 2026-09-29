@@ -95,6 +95,169 @@ AI_CONFIG_FILE = os.path.join(
 
 _ai_config_cache = None
 
+# ============ AI Provider 预置模板 ============
+AI_PROVIDER_PRESETS = [
+    {
+        "type": "zhipu",
+        "name": "智谱 GLM",
+        "sdk": "zhipu",
+        "default_model": "glm-4.7-flash",
+        "default_base_url": "",
+        "docs": "https://open.bigmodel.cn/",
+    },
+    {
+        "type": "openai",
+        "name": "OpenAI",
+        "sdk": "openai",
+        "default_model": "gpt-4o-mini",
+        "default_base_url": "https://api.openai.com/v1",
+        "docs": "https://platform.openai.com/",
+    },
+    {
+        "type": "deepseek",
+        "name": "DeepSeek 深度求索",
+        "sdk": "openai",
+        "default_model": "deepseek-chat",
+        "default_base_url": "https://api.deepseek.com/v1",
+        "docs": "https://platform.deepseek.com/",
+    },
+    {
+        "type": "moonshot",
+        "name": "Moonshot Kimi",
+        "sdk": "openai",
+        "default_model": "moonshot-v1-8k",
+        "default_base_url": "https://api.moonshot.cn/v1",
+        "docs": "https://platform.moonshot.cn/",
+    },
+    {
+        "type": "qwen",
+        "name": "通义千问 Qwen（DashScope）",
+        "sdk": "openai",
+        "default_model": "qwen-plus",
+        "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "docs": "https://dashscope.console.aliyun.com/",
+    },
+    {
+        "type": "doubao",
+        "name": "字节豆包（火山方舟）",
+        "sdk": "openai",
+        "default_model": "doubao-pro-32k",
+        "default_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "docs": "https://console.volcengine.com/ark",
+    },
+    {
+        "type": "hunyuan",
+        "name": "腾讯混元",
+        "sdk": "openai",
+        "default_model": "hunyuan-turbo",
+        "default_base_url": "https://api.hunyuan.cloud.tencent.com/v1",
+        "docs": "https://cloud.tencent.com/product/hunyuan",
+    },
+    {
+        "type": "baichuan",
+        "name": "百川智能",
+        "sdk": "openai",
+        "default_model": "Baichuan4",
+        "default_base_url": "https://api.baichuan-ai.com/v1",
+        "docs": "https://platform.baichuan-ai.com/",
+    },
+    {
+        "type": "minimax",
+        "name": "MiniMax",
+        "sdk": "openai",
+        "default_model": "abab6.5s-chat",
+        "default_base_url": "https://api.minimax.chat/v1",
+        "docs": "https://platform.minimaxi.com/",
+    },
+    {
+        "type": "yi",
+        "name": "零一万物 Yi",
+        "sdk": "openai",
+        "default_model": "yi-large",
+        "default_base_url": "https://api.lingyiwanwu.com/v1",
+        "docs": "https://platform.lingyiwanwu.com/",
+    },
+    {
+        "type": "stepfun",
+        "name": "阶跃星辰 StepFun",
+        "sdk": "openai",
+        "default_model": "step-1-8k",
+        "default_base_url": "https://api.stepfun.com/v1",
+        "docs": "https://platform.stepfun.com/",
+    },
+    {
+        "type": "siliconflow",
+        "name": "硅基流动 SiliconFlow",
+        "sdk": "openai",
+        "default_model": "Qwen/Qwen2.5-7B-Instruct",
+        "default_base_url": "https://api.siliconflow.cn/v1",
+        "docs": "https://siliconflow.cn/",
+    },
+    {
+        "type": "openrouter",
+        "name": "OpenRouter",
+        "sdk": "openai",
+        "default_model": "openai/gpt-4o-mini",
+        "default_base_url": "https://openrouter.ai/api/v1",
+        "docs": "https://openrouter.ai/",
+    },
+    {
+        "type": "gemini",
+        "name": "Google Gemini（OpenAI 兼容）",
+        "sdk": "openai",
+        "default_model": "gemini-1.5-flash",
+        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "docs": "https://aistudio.google.com/",
+    },
+    {
+        "type": "anthropic",
+        "name": "Anthropic Claude",
+        "sdk": "anthropic",
+        "default_model": "claude-3-5-sonnet-latest",
+        "default_base_url": "",
+        "docs": "https://console.anthropic.com/",
+    },
+    {
+        "type": "ollama",
+        "name": "Ollama（本地）",
+        "sdk": "openai",
+        "default_model": "qwen2.5:7b",
+        "default_base_url": "http://localhost:11434/v1",
+        "docs": "https://ollama.com/",
+    },
+    {
+        "type": "vllm",
+        "name": "vLLM（本地）",
+        "sdk": "openai",
+        "default_model": "Qwen/Qwen2.5-7B-Instruct",
+        "default_base_url": "http://localhost:8000/v1",
+        "docs": "https://docs.vllm.ai/",
+    },
+    {
+        "type": "custom",
+        "name": "自定义（OpenAI 兼容）",
+        "sdk": "openai",
+        "default_model": "",
+        "default_base_url": "",
+        "docs": "",
+    },
+]
+
+
+def get_ai_provider_presets():
+    """返回预置表（不含任何密钥），供前端渲染下拉框"""
+    return [
+        {
+            "type": p["type"],
+            "name": p["name"],
+            "sdk": p["sdk"],
+            "default_model": p["default_model"],
+            "default_base_url": p["default_base_url"],
+            "docs": p["docs"],
+        }
+        for p in AI_PROVIDER_PRESETS
+    ]
+
 
 def _tokenize(text: str) -> set:
     """使用 jieba 分词，返回去除停用词和标点后的词集合"""
@@ -334,6 +497,7 @@ def _load_ai_config():
                 "id": "seed-zhipu",
                 "name": "智谱 GLM（来自 .env）",
                 "provider": "zhipu",
+                "sdk": "zhipu",
                 "api_key": ZHIPU_API_KEY,
                 "model": ZHIPU_MODEL,
                 "base_url": "",
