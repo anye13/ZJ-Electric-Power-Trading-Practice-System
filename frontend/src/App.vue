@@ -1,5 +1,5 @@
 <template>
-  <div id="app">
+  <div id="app" :class="{ 'focus-mode': store.focusMode }">
     <header class="top-header">
       <!-- 移动端汉堡按钮 -->
       <button class="menu-toggle" @click="toggleSidebar" aria-label="菜单">
@@ -158,6 +158,16 @@ watch(() => route.path, (newPath) => {
   }
   // 离开时不做任何操作，保留用户选择
 }, { immediate: true });
+// 进入专注模式时，自动关闭 AI 侧边栏和移动端抽屉
+watch(
+  () => store.focusMode,
+  (v) => {
+    if (v) {
+      showChat.value = false;
+      sidebarOpen.value = false;
+    }
+  }
+);
 </script>
 
 <style scoped>
@@ -456,5 +466,30 @@ watch(() => route.path, (newPath) => {
     padding: 14px 20px;
     font-size: 15px;
   }
+}
+
+/* ========== 专注模式：禁用做题页之外的所有交互 ========== */
+#app.focus-mode .top-header,
+#app.focus-mode .sidebar {
+  pointer-events: none;
+  user-select: none;
+  opacity: 0.45;
+  filter: grayscale(0.7);
+  transition: opacity 0.25s ease, filter 0.25s ease;
+}
+
+/* 桌面端遮罩本身也要失效 */
+#app.focus-mode .sidebar-mask {
+  pointer-events: none;
+}
+
+/* AI 侧边栏若已打开则一起失效（进入时会自动关闭，此处兜底） */
+#app.focus-mode :deep(.chat-sidebar) {
+  pointer-events: none;
+}
+
+/* 让内容区更聚焦一点（可选，视觉上更“专注”） */
+#app.focus-mode .content-area {
+  transition: padding 0.25s ease;
 }
 </style>

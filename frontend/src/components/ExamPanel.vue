@@ -10,6 +10,10 @@
       <div class="exam-controls">
         <span class="badge">当前 {{ store.totalDisplay }} 题</span>
         <span class="mode-badge">{{ store.filterWrong ? '错题集' : '未作答' }}</span>
+        <!-- 专注模式按钮 -->
+        <button class="focus-btn" :class="{ active: store.focusMode }" @click="toggleFocus">
+          {{ store.focusMode ? '🎯 专注中' : '🎯 专注模式' }}
+        </button>
       </div>
     </div>
 
@@ -162,6 +166,20 @@
         <p class="hint">选择后自动应用，也可在侧边栏设置中更改</p>
       </div>
     </div>
+    <!-- 专注模式退出提示 -->
+    <div v-if="showFocusExitModal" class="modal-overlay" @click.self="showFocusExitModal = false">
+      <div class="modal-content">
+        <h2>🎯 专注模式进行中</h2>
+        <p class="focus-progress">
+          已作答 <strong>{{ focusSubmitted }}</strong> / {{ store.sheetData.items.length }} 题，
+          还剩 <strong class="focus-remaining">{{ focusRemaining }}</strong> 题
+        </p>
+        <p class="hint">请答完所有题目后再退出专注模式</p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" @click="showFocusExitModal = false">继续答题</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -173,6 +191,7 @@ import type { SheetItem } from '@/types';
 import { usePaperStore } from '@/stores/paper';
 const showRefreshModal = ref(false);
 const showAllDoneModal = ref(false);
+const showFocusExitModal = ref(false);
 defineOptions({ name: 'ExamPanel' });
 const showModeSelect = ref(false);
 const store = useExamStore();
@@ -249,6 +268,7 @@ function formatMath(text: string): string {
     .replace(/\$\$(.*?)\$\$/g, (_, p1) => `\\(${p1}\\)`)   // 块级 → 行内
     .replace(/\$(.*?)\$/g, (_, p1) => `\\(${p1}\\)`);       // 行内 → 行内
 }
+
 async function onSheetItemClick(pos: number) {
   await store.jumpTo(pos);
   // 移动端点击题目后自动收起答题卡
@@ -273,6 +293,34 @@ async function selectMode(useWrong: boolean) {
       ? '当前错题集为空，可前往管理界面添加题目'
       : '当前没有未作答题目，可前往管理界面添加题目'
     );
+  }
+}
+// ========== 专注模式 ==========
+/** 当前这一轮练习中，尚未提交答案的题目数 */
+const focusRemaining = computed(() => {
+  return store.sheetData.items.filter(i => !i.submitted).length;
+});
+
+/** 已提交数量（用于显示进度） */
+const focusSubmitted = computed(() => {
+  return store.sheetData.items.filter(i => i.submitted).length;
+});
+function toggleFocus() {
+  // 进入专注模式
+  if (!store.focusMode) {
+    if (store.totalDisplay === 0) {
+      alert('当前没有待作答的题目');
+      return;
+    }
+    store.focusMode = true;
+    return;
+  }
+
+  // 已在专注模式，检查是否还有未提交的题
+  if (focusRemaining.value === 0) {
+    store.focusMode = false;
+  } else {
+    showFocusExitModal.value = true;
   }
 }
 // 关闭模态窗：默认未作答模式，允许用户自由切换页面
@@ -381,6 +429,14 @@ watch(() => [store.totalDisplay, store.filterWrong], ([newTotal, isWrong]) => {
     showAllDoneModal.value = false;
   }
 });
+watch(
+  () => store.totalDisplay,
+  (newTotal) => {
+    if (store.focusMode && newTotal === 0) {
+      store.focusMode = false;
+    }
+  }
+);
 </script>
 
 <style scoped>
@@ -996,5 +1052,71 @@ watch(() => [store.totalDisplay, store.filterWrong], ([newTotal, isWrong]) => {
   .chat-sidebar {
     width: 100%;
   }
+}
+
+.focus-btn {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  padding: 4px 14px;
+  border-radius: 16px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+
+.focus-btn:hover {
+  background: var(--bg-hover);
+}
+
+.focus-btn.active {
+  background: #d29922;
+  color: #fff;
+  border-color: #d29922;
+  animation: focus-pulse 2s ease-in-out infinite;
+}
+
+@keyframes focus-pulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(210, 153, 34, 0.55);
+  }
+
+  50% {
+    box-shadow: 0 0 0 8px rgba(210, 153, 34, 0);
+  }
+}
+
+@media (max-width: 768px) {
+  .focus-btn {
+    font-size: 12px;
+    padding: 3px 10px;
+  }
+}
+
+/* 专注模式模态窗 */
+.focus-progress {
+  font-size: 15px;
+  color: var(--text-primary);
+  margin: 12px 0 6px;
+}
+
+.focus-progress strong {
+  color: var(--accent-blue);
+  font-size: 17px;
+  margin: 0 2px;
+}
+
+.focus-progress .focus-remaining {
+  color: #d29922;
+}
+
+.modal-content .hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 4px;
 }
 </style>

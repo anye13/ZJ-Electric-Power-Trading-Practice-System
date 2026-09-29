@@ -5,6 +5,8 @@ import type { DisplayQuestion, SheetData, SheetItem } from '@/types';
 
 export const useExamStore = defineStore('exam', () => {
     const title = ref('');
+    // 专注模式：为 true 时非做题区域被禁用
+    const focusMode = ref(false);
     const currentPos = ref(0);
     const totalDisplay = ref(0);
     const totalAll = ref(0);
@@ -375,5 +377,6 @@ export const useExamStore = defineStore('exam', () => {
         jumpTo,
         resetAll,
         reloadQuestions,
+        focusMode,
     };
 });
