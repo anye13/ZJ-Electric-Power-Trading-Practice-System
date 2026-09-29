@@ -9,7 +9,7 @@ env/
 .mypy_cache/
 *.db
 *.sqlite3
-
+*.pyc
 # Node
 node_modules/
 dist/
@@ -23,6 +23,7 @@ pnpm-debug.log*
 # 环境变量（不要上传密钥）
 .env
 .env.*
+*.env.local
 !.env.example
 
 # IDE

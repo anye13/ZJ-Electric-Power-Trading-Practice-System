@@ -1,0 +1,7 @@
+Flask
+flask-cors
+PyMySQL
+apscheduler
+jieba
+zhipuai
+python-dotenv
