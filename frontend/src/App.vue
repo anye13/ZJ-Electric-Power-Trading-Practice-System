@@ -1,7 +1,16 @@
 <template>
   <div id="app">
     <header class="top-header">
-      <h1>📚 浙江电力市场规则题库</h1>
+      <h1>📚 全国电力市场规则题库</h1>
+      <div class="header-center">
+        <label>📄 试卷：</label>
+        <select :value="paperStore.selectedPaperId ?? ''" @change="onPaperChange" class="paper-selector">
+          <option value="">全部试卷</option>
+          <option v-for="p in paperStore.papers" :key="p.id" :value="p.id">
+            {{ p.title }}
+          </option>
+        </select>
+      </div>
       <span class="clock">{{ now }}</span>
       <button class="chat-toggle" @click="toggleChat">💬 AI 助手</button>
     </header>
@@ -13,6 +22,8 @@
           <li><router-link to="/analysis" active-class="active">📊 数据统计</router-link></li>
           <li><router-link to="/wrong-analysis" active-class="active">📉 错题分析</router-link></li>
           <li><router-link to="/knowledge" active-class="active">🧠 知识图谱</router-link></li>
+          <li><router-link to="/srs" active-class="active">🔁 间隔复习</router-link></li>
+          <li><router-link to="/graph-walk" active-class="active">🧭 图谱漫游</router-link></li>
           <li><router-link to="/manage" active-class="active">📋 管理界面</router-link></li>
           <li><router-link to="/settings" active-class="active">⚙️ 设置</router-link></li>
         </ul>
@@ -46,6 +57,7 @@ import EditModal from './components/EditModal.vue';
 import type { Question } from './types';
 import { useExamStore } from './stores/exam';
 import AIChatSidebar from './components/AIChatSidebar.vue';
+import { usePaperStore } from './stores/paper';
 const now = ref(new Date().toLocaleString('zh-CN'));
 let timer: number;
 const showImport = ref(false);
@@ -57,7 +69,7 @@ const store = useExamStore();
 const showChat = ref(false);
 const isDark = ref(true); // 暗黑模式开关
 const toggleChat = () => (showChat.value = !showChat.value);
-
+const paperStore = usePaperStore();
 function toggleTheme() {
   isDark.value = !isDark.value;
   updateTheme();
@@ -86,15 +98,24 @@ function onEditSaved() {
   editingQuestion.value = null;
   if (route.path === '/manage') contentRef.value?.refresh?.();
 }
-onMounted(() => {
+onMounted(async () => {
   timer = window.setInterval(() => {
     now.value = new Date().toLocaleString('zh-CN');
   }, 1000);
   const saved = localStorage.getItem('theme');
   isDark.value = saved !== 'light';
-  store.loadQuestion();
   updateTheme();
+  // 全局只初始化一次
+  await paperStore.ensureInit();
+  // 做题状态初始化
+  store.loadQuestion();
 });
+/** 切换试卷 */
+async function onPaperChange(e: Event) {
+  const val = (e.target as HTMLSelectElement).value;
+  const id = val === '' ? null : parseInt(val);
+  await paperStore.setPaper(id);
+}
 onUnmounted(() => clearInterval(timer));
 // 路由切换时重置设置（可选）
 watch(() => route.path, (newPath) => {
@@ -120,6 +141,34 @@ watch(() => route.path, (newPath) => {
   top: 0;
   z-index: 100;
   border-bottom: 1px solid var(--border-color);
+}
+
+.header-center {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-center label {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.paper-selector {
+  padding: 4px 10px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  min-width: 160px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
 .top-header h1 {

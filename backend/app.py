@@ -45,6 +45,7 @@ class ExamState:
             self.paper_id = settings.get("paper_id")  # ← 新增
             self.order_list = []
             self.progress = settings.get("progress", {})
+            self.progress_timestamp = settings.get("progress_timestamp", {})
             self._build_order_list()
             print(f"ExamState 初始化成功，paper_id={self.paper_id}", file=sys.stderr)
         except Exception as e:
@@ -160,8 +161,9 @@ class ExamState:
             "filter_wrong": self.filter_wrong,
             "random_order": self.random_order,
             "practice_limit": self.practice_limit,
-            "paper_id": self.paper_id,  # 新增
+            "paper_id": self.paper_id,
             "progress": self.progress,
+            # 不再传 progress_timestamp，避免覆盖
         }
         save_user_settings(settings)
 
@@ -322,10 +324,10 @@ def submit_answer():
     # 错题处理（仅一次）
     if is_correct:
         remove_wrong_question(1, question_id)
-        update_progress_timestamp(question_id)
     else:
         add_wrong_question(1, question_id)
-
+    # 无论对错，都更新作答时间戳（用于日历统计）
+    update_progress_timestamp(question_id)
     # 更新错题ID列表
     state.wrong_ids = set(get_wrong_question_ids(1))
 
@@ -334,7 +336,8 @@ def submit_answer():
     if not state.progress.get(qid_str, False):
         state.progress[qid_str] = True
         state.save_progress()
-
+    # 加入间隔重复系统
+    add_question_to_srs(question_id)
     return jsonify(
         {
             "correct": is_correct,
@@ -467,10 +470,8 @@ def refresh_questions():
 
 @app.route("/api/wrong_report", methods=["GET"])
 def wrong_report():
-    """获取所有错题数据（不含AI）"""
-    from data_manager import get_wrong_report_data
-
-    data = get_wrong_report_data(1)
+    paper_id = request.args.get("paper_id", type=int)
+    data = get_wrong_report_data(1, paper_id)
     return jsonify(data)
 
 
@@ -618,14 +619,16 @@ def import_questions():
 
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
-    data = get_stats_data()
+    paper_id = request.args.get("paper_id", type=int)
+    data = get_stats_data(paper_id)
     return jsonify(data)
 
 
 @app.route("/api/recent_wrong", methods=["GET"])
 def recent_wrong():
     limit = request.args.get("limit", 10, type=int)
-    data = get_recent_wrong_questions(1, limit)
+    paper_id = request.args.get("paper_id", type=int)
+    data = get_recent_wrong_questions(1, limit, paper_id)
     return jsonify(data)
 
 
@@ -662,7 +665,7 @@ def get_papers():
 
 
 @app.route("/api/papers", methods=["POST"])
-def create_paper():
+def create_paper_route():
     data = request.json
     title = data.get("title", "未命名试卷")
     if not title:
@@ -672,7 +675,7 @@ def create_paper():
 
 
 @app.route("/api/papers/<int:paper_id>", methods=["PUT"])
-def update_paper(paper_id):
+def update_paper_route(paper_id):
     data = request.json
     title = data.get("title")
     if not title:
@@ -682,7 +685,7 @@ def update_paper(paper_id):
 
 
 @app.route("/api/papers/<int:paper_id>", methods=["DELETE"])
-def delete_paper(paper_id):
+def delete_paper_route(paper_id):
     delete_paper(paper_id)
     state.reload_questions()
     return jsonify({"status": "ok"})
@@ -690,7 +693,8 @@ def delete_paper(paper_id):
 
 @app.route("/api/knowledge_graph", methods=["GET"])
 def knowledge_graph():
-    data = get_knowledge_graph_data(1)
+    paper_id = request.args.get("paper_id", type=int)
+    data = get_knowledge_graph_data(1, paper_id)
     return jsonify(data)
 
 
@@ -743,8 +747,71 @@ def get_knowledge_graph():
 def daily_stats():
     year = request.args.get("year", type=int)
     month = request.args.get("month", type=int)
-    data = get_daily_stats(1, year, month)
+    paper_id = request.args.get("paper_id", type=int)  # ← 新增
+    data = get_daily_stats(1, year, month, paper_id)  # ← 传 paper_id
     return jsonify(data)
+
+
+# ========== 间隔重复 ==========
+@app.route("/api/srs/due", methods=["GET"])
+def srs_due():
+    paper_id = request.args.get("paper_id", type=int)
+    limit = request.args.get("limit", 50, type=int)
+    cards = get_due_srs_cards(1, paper_id, limit)
+    return jsonify(cards)
+
+
+@app.route("/api/srs/review", methods=["POST"])
+def srs_review():
+    data = request.json
+    card_id = data.get("card_id")
+    quality = data.get("quality", 3)  # 0-5
+    result = review_srs_card(card_id, quality)
+    if result is None:
+        return jsonify({"error": "卡片不存在"}), 404
+    return jsonify({"status": "ok", **result})
+
+
+@app.route("/api/srs/stats", methods=["GET"])
+def srs_stats():
+    paper_id = request.args.get("paper_id", type=int)
+    return jsonify(get_srs_stats(1, paper_id))
+
+
+@app.route("/api/srs/add", methods=["POST"])
+def srs_add():
+    data = request.json
+    question_id = data.get("question_id")
+    if not question_id:
+        return jsonify({"error": "缺少题目ID"}), 400
+    add_question_to_srs(question_id)
+    return jsonify({"status": "ok"})
+
+
+# 提交答案时自动加入 SRS
+# 在 submit_answer() 函数中，题目的处理逻辑后追加：
+# add_question_to_srs(question_id)
+
+
+# ========== 图谱漫游 ==========
+@app.route("/api/graph/walk/start", methods=["POST"])
+def graph_walk_start():
+    data = request.json
+    knowledge_id = data.get("knowledge_id")
+    if not knowledge_id:
+        return jsonify({"error": "缺少知识点ID"}), 400
+    walk_id = start_graph_walk(knowledge_id)
+    return jsonify({"walk_id": walk_id})
+
+
+@app.route("/api/graph/walk/related", methods=["GET"])
+def graph_walk_related():
+    knowledge_id = request.args.get("knowledge_id", type=int)
+    paper_id = request.args.get("paper_id", type=int)
+    if not knowledge_id:
+        return jsonify({"error": "缺少知识点ID"}), 400
+    related = get_related_knowledge(knowledge_id, paper_id)
+    return jsonify(related)
 
 
 if __name__ == "__main__":

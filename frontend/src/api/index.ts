@@ -78,8 +78,10 @@ export const getQuestionList = (
     api.get('/manage/list', {
         params: { page, per_page: perPage, search, wrong_only: wrongOnly, type, unanswered_only: unansweredOnly, paper_id: paperId }
     }).then(res => res.data);
-export const getDailyStats = (year?: number, month?: number) =>
-    api.get('/daily_stats', { params: { year, month } }).then(res => res.data);
+export const getDailyStats = (year?: number, month?: number, paperId?: number | null) =>
+    api.get('/daily_stats', {
+        params: { year, month, paper_id: paperId ?? undefined }
+    }).then(res => res.data);
 export const importQuestions = (data: { paper_info: any; questions: any[] }): Promise<ImportResult> =>
     api.post('/import', data).then(res => res.data);
 
@@ -95,17 +97,19 @@ export const createQuestion = (data: Partial<Question>) =>
 // ========== 批量删除 ==========
 export const batchDeleteQuestions = (ids: number[]) =>
     api.post('/manage/batch_delete', { ids }).then(res => res.data);
-export const getStats = () => api.get('/stats').then(res => res.data);
+export const getStats = (paperId?: number) =>
+    api.get('/stats', { params: { paper_id: paperId } }).then(res => res.data);
 export const saveProgress = (questionId: number, answer: any) =>
     api.post('/progress', { index: questionId, answer }).then(res => res.data);
-export const getRecentWrong = (limit: number = 10) =>
-    api.get('/recent_wrong', { params: { limit } }).then(res => res.data);
+export const getRecentWrong = (limit: number = 10, paperId?: number) =>
+    api.get('/recent_wrong', { params: { limit, paper_id: paperId } }).then(res => res.data);
 export const resetProgress = () => api.post('/reset_progress').then(res => res.data);
 export const chopQuestion = (questionId: number) =>
     api.post('/chop_question', { index: questionId }).then(res => res.data);
 export const chat = (message: string) =>
     api.post('/chat', { message }).then(res => res.data);
-export const getWrongReport = () => api.get('/wrong_report').then(res => res.data);
+export const getWrongReport = (paperId?: number) =>
+    api.get('/wrong_report', { params: { paper_id: paperId } }).then(res => res.data);
 export const getUserSettings = () => api.get('/user_settings').then(res => res.data);
 export const setCleanDays = (days: number) => api.post('/set_clean_days', { days }).then(res => res.data);
 export const getPapers = () => api.get('/papers').then(res => res.data);
@@ -117,4 +121,25 @@ export const getKnowledgePoints = () => api.get('/knowledge_points').then(res =>
 export const createKnowledgePoint = (name: string, description?: string) => api.post('/knowledge_points', { name, description }).then(res => res.data);
 export const updateKnowledgePoint = (id: number, name: string, description?: string) => api.put(`/knowledge_points/${id}`, { name, description }).then(res => res.data);
 export const deleteKnowledgePoint = (id: number) => api.delete(`/knowledge_points/${id}`).then(res => res.data);
-export const getKnowledgeGraph = () => api.get('/knowledge_graph').then(res => res.data);
+export const getKnowledgeGraph = (paperId?: number) =>
+    api.get('/knowledge_graph', { params: { paper_id: paperId } }).then(res => res.data);
+// ========== 间隔重复 ==========
+export const getSrsDue = (paperId?: number) =>
+    api.get('/srs/due', { params: { paper_id: paperId } }).then(res => res.data);
+
+export const reviewSrsCard = (cardId: number, quality: number) =>
+    api.post('/srs/review', { card_id: cardId, quality }).then(res => res.data);
+
+export const getSrsStats = (paperId?: number) =>
+    api.get('/srs/stats', { params: { paper_id: paperId } }).then(res => res.data);
+
+export const addToSrs = (questionId: number) =>
+    api.post('/srs/add', { question_id: questionId }).then(res => res.data);
+
+// ========== 图谱漫游 ==========
+export const startGraphWalk = (knowledgeId: number) =>
+    api.post('/graph/walk/start', { knowledge_id: knowledgeId }).then(res => res.data);
+
+export const getRelatedKnowledge = (knowledgeId: number, paperId?: number) =>
+    api.get('/graph/walk/related', { params: { knowledge_id: knowledgeId, paper_id: paperId } })
+        .then(res => res.data);

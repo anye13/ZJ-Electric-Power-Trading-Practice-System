@@ -8,11 +8,6 @@
         <h1>{{ store.title }}</h1>
       </div>
       <div class="exam-controls">
-        <!-- 试卷选择器 -->
-        <select v-model="selectedPaperId" @change="onPaperChange" class="paper-selector">
-          <option :value="null">全部试卷</option>
-          <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
-        </select>
         <span class="badge">当前 {{ store.totalDisplay }} 题</span>
         <span class="mode-badge">{{ store.filterWrong ? '错题集' : '未作答' }}</span>
       </div>
@@ -164,14 +159,14 @@
 import { onMounted, onActivated, ref, watch, computed } from 'vue';
 import { useExamStore } from '@/stores/exam';
 import * as api from '@/api';
-import type { Paper, SheetItem } from '@/types';
+import type { SheetItem } from '@/types';
+import { usePaperStore } from '@/stores/paper';
 const showRefreshModal = ref(false);
 const showAllDoneModal = ref(false);
 defineOptions({ name: 'ExamPanel' });
 const showModeSelect = ref(false);
 const store = useExamStore();
-const papers = ref<Paper[]>([]);
-const selectedPaperId = ref<number | null>(null);
+const paperStore = usePaperStore();
 const typeMap: Record<string, string> = {
   single_choice: '单选题',
   multiple_choice: '多选题',
@@ -189,33 +184,7 @@ const typeOrder = [
   'essay',
 ];
 const modeSelectDismissed = ref(false);
-// 按题型分组并全局连续编号
-const orderedSheetGroups = computed(() => {
-  const groups: Record<string, SheetItem[]> = {};
-  // 先按题型分组
-  store.sheetData.items.forEach(item => {
-    if (!groups[item.type]) groups[item.type] = [];
-    groups[item.type].push(item);
-  });
 
-  // 按题型顺序输出，同时给每个题目分配连续编号
-  let counter = 1;
-  const result: Array<{ type: string; items: Array<SheetItem & { displayNumber: number }> }> = [];
-
-  typeOrder.forEach(type => {
-    if (groups[type] && groups[type].length > 0) {
-      // 组内按 pos 升序排列
-      const sorted = [...groups[type]].sort((a, b) => a.pos - b.pos);
-      const items = sorted.map(item => ({
-        ...item,
-        displayNumber: counter++,
-      }));
-      result.push({ type, items });
-    }
-  });
-
-  return result;
-});
 // 按题型分组后的展示顺序（数组元素是 pos）
 const displayOrder = computed<number[]>(() => {
   const groups: Record<string, SheetItem[]> = {};
@@ -310,19 +279,6 @@ async function checkModeSelection() {
     showModeSelect.value = true;
   }
 }
-async function loadPapers() {
-  try {
-    papers.value = await api.getPapers();
-  } catch (e) {
-    console.error('加载试卷失败', e);
-  }
-}
-async function onPaperChange() {
-  await store.updateSettings({ paper_id: selectedPaperId.value });
-  // 重置当前题目
-  store.currentPos = 0;
-  await store.loadQuestion();
-}
 // 按显示顺序导航
 async function handlePrev() {
   const idx = currentDisplayIndex.value;
@@ -385,19 +341,21 @@ async function handleChop() {
 }
 
 onMounted(async () => {
-  await loadPapers();
-  // 从用户设置读取当前 paper_id
-  try {
-    const settings = await api.getUserSettings();
-    selectedPaperId.value = settings.paper_id ?? null;
-  } catch { }
+  await paperStore.ensureInit();
   checkModeSelection();
 });
 
 onActivated(() => {
   store.loadQuestion();
 });
-
+// 全局试卷变化时，重新加载题目
+watch(
+  () => paperStore.selectedPaperId,
+  async () => {
+    store.currentPos = 0;
+    await store.loadQuestion();
+  }
+);
 watch(() => [store.totalDisplay, store.filterWrong], ([newTotal, isWrong]) => {
   if (!isWrong && newTotal === 0 && store.totalAll > 0) {
     showAllDoneModal.value = true;

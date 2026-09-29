@@ -60,17 +60,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import * as api from '@/api';
 import html2pdf from 'html2pdf.js';
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell } from 'docx';
-
+import { usePaperStore } from '@/stores/paper';
 const reportData = ref<any[]>([]);
 const loading = ref(false);
 const error = ref('');
-const reportContent = ref<HTMLElement | null>(null);
 const selectedType = ref<string>('');
-
+const paperStore = usePaperStore();
 const typeMap: Record<string, string> = {
     single_choice: '单选题',
     multiple_choice: '多选题',
@@ -98,12 +97,11 @@ const typeList = computed(() => {
 function selectType(type: string) {
     selectedType.value = type;
 }
-
 async function loadReport() {
     loading.value = true;
     error.value = '';
     try {
-        const data = await api.getWrongReport();
+        const data = await api.getWrongReport(paperStore.selectedPaperId ?? undefined);
         reportData.value = data;
         if (typeList.value.length > 0) {
             selectedType.value = typeList.value[0];
@@ -210,8 +208,12 @@ async function exportWord() {
     a.click();
     URL.revokeObjectURL(url);
 }
-
-onMounted(() => {
+watch(
+    () => paperStore.selectedPaperId,
+    () => loadReport()
+);
+onMounted(async () => {
+    await paperStore.ensureInit();
     loadReport();
 });
 </script>

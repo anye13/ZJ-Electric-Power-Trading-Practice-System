@@ -12,7 +12,15 @@
       </div>
     </div>
 
+    <!-- 工具栏 -->
     <div class="manage-toolbar">
+      <button class="btn btn-sm btn-primary" @click="showPaperManager = true">
+        📄 查看试卷
+      </button>
+      <span class="current-paper-label">
+        当前：<strong>{{ paperStore.selectedPaper?.title || '全部试卷' }}</strong>
+      </span>
+
       <select v-model="filterType" @change="loadList(1)">
         <option value="">全部题型</option>
         <option value="single_choice">单选题</option>
@@ -22,14 +30,12 @@
         <option value="calculation">计算题</option>
         <option value="essay">解答题</option>
       </select>
-      <!-- 试卷选择 -->
-      <select v-model="selectedPaper" @change="onPaperChange">
-        <option v-for="p in papers" :key="p.id" :value="p.id">{{ p.title }}</option>
-      </select>
-      <button class="btn btn-sm btn-primary" @click="showCreatePaper = true">+ 新建试卷</button>
+
       <input type="text" v-model="search" placeholder="搜索内容或ID..." @input="loadList(1)" class="search-input" />
+
       <label><input type="checkbox" v-model="wrongOnly" @change="loadList(1)" /> 仅显示错题</label>
       <label><input type="checkbox" v-model="unansweredOnly" @change="loadList(1)" /> 仅显示未作答</label>
+
       <div class="per-page">
         <label>每页</label>
         <select v-model="perPage" @change="loadList(1)">
@@ -42,6 +48,7 @@
       </div>
     </div>
 
+    <!-- 表格 -->
     <div class="table-wrap">
       <table class="table table-striped">
         <thead>
@@ -76,40 +83,35 @@
       </table>
     </div>
 
+    <!-- 分页 -->
     <div class="pagination">
       <button @click="loadList(page - 1)" :disabled="page <= 1">上一页</button>
       <span>第 {{ page }} / {{ pages }} 页</span>
       <button @click="loadList(page + 1)" :disabled="page >= pages">下一页</button>
       <span>（共 {{ total }} 条）</span>
     </div>
-  </div>
-  <!-- ===== 新建试卷模态窗 ===== -->
-  <div v-if="showCreatePaper" class="modal-overlay" @click.self="showCreatePaper = false">
-    <div class="modal-content" style="max-width: 400px;">
-      <h3>📄 新建试卷</h3>
-      <input type="text" v-model="newPaperTitle" placeholder="请输入试卷名称" class="paper-input" @keyup.enter="createPaper" />
-      <div class="modal-actions">
-        <button class="btn btn-primary" @click="createPaper">创建</button>
-        <button class="btn" @click="showCreatePaper = false">取消</button>
-      </div>
-    </div>
+
+    <!-- 试卷管理模态窗 -->
+    <PaperManagerModal v-model:visible="showPaperManager" @changed="onPaperManagerChanged" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import * as api from '@/api';
-import type { Question, Paper } from '@/types';
+import type { Question } from '@/types';
+import { usePaperStore } from '@/stores/paper';
+import PaperManagerModal from './PaperManagerModal.vue';
+
+const paperStore = usePaperStore();
+const showPaperManager = ref(false);
 
 const emit = defineEmits<{
   (e: 'showImport'): void;
   (e: 'edit', question: Question): void;
   (e: 'add'): void;
 }>();
-const papers = ref<Paper[]>([]);
-const selectedPaper = ref<number | null>(null);
-const showCreatePaper = ref(false);
-const newPaperTitle = ref('');
+
 const list = ref<Question[]>([]);
 const total = ref(0);
 const page = ref(1);
@@ -117,11 +119,14 @@ const perPage = ref(10);
 const search = ref('');
 const selectedIds = ref<number[]>([]);
 const filterType = ref('');
-const pages = computed(() => Math.ceil(total.value / (perPage.value || 1)));
-const allChecked = computed(() => {
-  return list.value.length > 0 && list.value.every(q => selectedIds.value.includes(q.id));
-});
+const wrongOnly = ref(false);
 const unansweredOnly = ref(false);
+
+const pages = computed(() => Math.ceil(total.value / (perPage.value || 1)));
+const allChecked = computed(
+  () => list.value.length > 0 && list.value.every(q => selectedIds.value.includes(q.id))
+);
+
 const typeMap: Record<string, string> = {
   single_choice: '单选题',
   multiple_choice: '多选题',
@@ -130,38 +135,15 @@ const typeMap: Record<string, string> = {
   calculation: '计算题',
   essay: '解答题',
 };
-const wrongOnly = ref(false);
-// 计算全局索引（从1开始）
+
 function getGlobalIndex(index: number): number {
-  if (perPage.value === 0) {
-    return index + 1;
-  }
+  if (perPage.value === 0) return index + 1;
   return (page.value - 1) * perPage.value + index + 1;
 }
-async function loadPapers() {
-  papers.value = await api.getPapers();
-  if (papers.value.length > 0) {
-    selectedPaper.value = papers.value[0].id;
-  }
-  loadList(1);
-}
 
-async function createPaper() {
-  if (!newPaperTitle.value.trim()) return;
-  await api.createPaper(newPaperTitle.value);
-  newPaperTitle.value = '';
-  showCreatePaper.value = false;
-  await loadPapers();
-}
-
-async function deletePaper(id: number) {
-  if (!confirm('确定删除此试卷吗？将同时删除其所有题目！')) return;
-  await api.deletePaper(id);
-  await loadPapers();
-}
 async function loadList(p?: number) {
   if (p !== undefined) page.value = p;
-  const paperId = selectedPaper.value ?? undefined;
+  const paperId = paperStore.selectedPaperId ?? undefined;
   const res = await api.getQuestionList(
     page.value,
     perPage.value,
@@ -174,6 +156,10 @@ async function loadList(p?: number) {
   list.value = res.items;
   total.value = res.total;
   selectedIds.value = [];
+}
+
+function onPaperManagerChanged() {
+  loadList(1);
 }
 
 async function deleteItem(id: number) {
@@ -189,29 +175,31 @@ async function batchDelete() {
   selectedIds.value = [];
   await loadList(page.value);
 }
-function onPaperChange() {
-  loadList(1);
-}
+
 function toggleAll(e: Event) {
   const checked = (e.target as HTMLInputElement).checked;
-  if (checked) {
-    selectedIds.value = list.value.map(q => q.id);
-  } else {
-    selectedIds.value = [];
-  }
+  selectedIds.value = checked ? list.value.map(q => q.id) : [];
 }
+
 async function resetProgress() {
   if (confirm('确定重置所有题目的进度吗？（将清空所有已答标记）')) {
     await api.resetProgress();
-    // 刷新列表
     await loadList(page.value);
-    // 可添加成功提示
     alert('进度已重置');
   }
 }
-onMounted(() => {
-  loadPapers(); // 先加载试卷，再加载题目
+
+onMounted(async () => {
+  await paperStore.ensureInit();
+  loadList(1);
 });
+
+watch(
+  () => paperStore.selectedPaperId,
+  () => {
+    loadList(1);
+  }
+);
 
 defineExpose({ refresh: () => loadList(page.value) });
 </script>
@@ -319,30 +307,10 @@ defineExpose({ refresh: () => loadList(page.value) });
   padding: 10px 12px;
 }
 
-.manage-toolbar .btn-sm {
-  padding: 2px 10px;
-  font-size: 12px;
-}
-
 .table td:first-child,
 .table th:first-child {
   width: 40px;
   text-align: center;
-}
-
-.empty-state {
-  text-align: center;
-  padding: 60px 20px;
-  color: var(--text-secondary);
-}
-
-.empty-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-}
-
-.empty-state p {
-  font-size: 18px;
 }
 
 .status-badge {
@@ -368,40 +336,12 @@ defineExpose({ refresh: () => loadList(page.value) });
   color: var(--text-secondary);
 }
 
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
+.current-paper-label {
+  color: var(--text-secondary);
+  font-size: 13px;
 }
 
-.modal-content {
-  background: var(--bg-card);
-  border-radius: var(--radius);
-  padding: 24px;
-  border: 1px solid var(--border-color);
-  width: 90%;
-  max-width: 400px;
-}
-
-.modal-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 16px;
-}
-
-.paper-input {
-  width: 100%;
-  padding: 8px 12px;
-  background: var(--bg-input);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
+.current-paper-label strong {
+  color: var(--accent-blue);
 }
 </style>

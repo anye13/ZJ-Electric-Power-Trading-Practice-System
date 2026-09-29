@@ -1,7 +1,6 @@
 <template>
     <div class="analysis-panel">
         <h2>📊 数据分析</h2>
-
         <!-- 统计卡片 -->
         <div class="summary-cards">
             <div class="card">
@@ -57,20 +56,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import * as echarts from 'echarts';
 import * as api from '@/api';
-
+import { usePaperStore } from '@/stores/paper';
 const barChartRef = ref<HTMLElement | null>(null);
 const pieChartRef = ref<HTMLElement | null>(null);
 let barChart: echarts.ECharts | null = null;
 let pieChart: echarts.ECharts | null = null;
-
+const selectedPaperId = ref<number | null>(null);
 const totalQuestions = ref(0);
 const wrongTotal = ref(0);
 const todayWrong = ref(0);
 const recentWrongList = ref<any[]>([]);
-
+const paperStore = usePaperStore();
 const wrongRate = computed(() => {
     if (totalQuestions.value === 0) return 0;
     return Math.round((wrongTotal.value / totalQuestions.value) * 100);
@@ -84,13 +83,13 @@ const typeMap: Record<string, string> = {
     calculation: '计算题',
     essay: "解析题"
 };
-
 async function loadStats() {
-    const data = await api.getStats();
+    const paperId = paperStore.selectedPaperId ?? undefined;
+    const data = await api.getStats(paperId);
     totalQuestions.value = data.total_questions;
     wrongTotal.value = data.wrong_total;
     // 今日错题（从最近错题中统计今天）
-    const recent = await api.getRecentWrong(50);
+    const recent = await api.getRecentWrong(50, paperId);
     recentWrongList.value = recent;
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
@@ -144,7 +143,8 @@ async function loadStats() {
     }
 }
 
-onMounted(() => {
+onMounted(async () => {
+    await paperStore.ensureInit();
     if (barChartRef.value) barChart = echarts.init(barChartRef.value);
     if (pieChartRef.value) pieChart = echarts.init(pieChartRef.value);
     loadStats();
@@ -158,6 +158,10 @@ onUnmounted(() => {
     barChart?.dispose();
     pieChart?.dispose();
 });
+watch(
+    () => paperStore.selectedPaperId,
+    () => loadStats()
+);
 </script>
 
 <style scoped>

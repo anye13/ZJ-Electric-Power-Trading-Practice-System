@@ -1,7 +1,6 @@
 <template>
     <div class="graph-container">
         <h2>🧠 知识图谱</h2>
-
         <!-- 控制面板 -->
         <div class="controls">
             <div class="control-group">
@@ -26,19 +25,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, onActivated, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, onActivated, nextTick, watch } from 'vue';
 import * as echarts from 'echarts';
 import * as api from '@/api';
-
+import { usePaperStore } from '@/stores/paper';
 let chart: echarts.ECharts | null = null;
 let observer: MutationObserver | null = null;
-
 const repulsion = ref(300);
 const showIsolated = ref(true);
 const hasData = ref(false);
 let rawNodes: any[] = [];
 let rawEdges: any[] = [];
-
+const paperStore = usePaperStore();
 function getThemeColors() {
     const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
     return {
@@ -143,26 +141,21 @@ function buildChartOption() {
 
 async function loadGraph() {
     try {
-        const data = await api.getKnowledgeGraph();
+        const data = await api.getKnowledgeGraph(paperStore.selectedPaperId ?? undefined);
         rawNodes = Array.isArray(data?.nodes) ? data.nodes : [];
         rawEdges = Array.isArray(data?.edges) ? data.edges : [];
 
         if (rawNodes.length === 0) {
             hasData.value = false;
-            // 清空图表
             if (chart) chart.clear();
             return;
         }
-
         hasData.value = true;
         await nextTick();
-
-        // 容器现在应已可见，确保 chart 已初始化
         if (!chart) {
             const dom = document.getElementById('graph');
             if (dom) chart = echarts.init(dom);
         }
-
         renderChart();
     } catch (error) {
         console.error('加载知识图谱失败:', error);
@@ -190,19 +183,19 @@ function startThemeObserver() {
         attributeFilter: ['data-theme'],
     });
 }
-
+watch(
+    () => paperStore.selectedPaperId,
+    () => loadGraph()
+);
 onMounted(async () => {
     await nextTick();
-    // 容器始终存在于 DOM 中，直接初始化
+    await paperStore.ensureInit();
     const dom = document.getElementById('graph');
-    if (dom) {
-        chart = echarts.init(dom);
-    }
+    if (dom) chart = echarts.init(dom);
     await loadGraph();
     startThemeObserver();
     window.addEventListener('resize', () => chart?.resize());
 });
-
 onActivated(() => {
     loadGraph();
 });

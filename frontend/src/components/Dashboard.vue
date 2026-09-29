@@ -1,155 +1,157 @@
 <template>
     <div class="dashboard">
-        <h2>📊 学习看板</h2>
-
-        <!-- 统计卡片 -->
-        <div class="stats-row">
-            <div class="stat-card">
-                <div class="stat-value">{{ totalQuestions }}</div>
-                <div class="stat-label">总题数</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value">{{ answeredCount }}</div>
-                <div class="stat-label">已答题目</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value">{{ accuracy }}%</div>
-                <div class="stat-label">正确率</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value">{{ streak }}</div>
-                <div class="stat-label">连续打卡天数</div>
-            </div>
-        </div>
-
-        <!-- 日历 -->
         <div class="calendar-wrapper">
             <div class="calendar-header">
-                <button @click="prevMonth">‹</button>
-                <span>{{ currentYear }} 年 {{ currentMonth }} 月</span>
-                <button @click="nextMonth">›</button>
+                <button @click="prevMonth" class="nav-btn">‹</button>
+                <span class="month-title">{{ currentYear }} 年 {{ currentMonth }} 月</span>
+                <button @click="nextMonth" class="nav-btn">›</button>
+            </div>
+            <div class="current-paper">
+                当前试卷：{{ paperStore.selectedPaper?.title || '全部试卷' }}
             </div>
             <div class="calendar-grid">
                 <div class="weekday" v-for="day in weekdays" :key="day">{{ day }}</div>
-                <div v-for="day in days" :key="day.date" class="calendar-cell" :class="{
+                <div v-for="(day, idx) in days" :key="idx" class="calendar-cell" :class="{
                     'empty': !day.date,
-                    'has-data': day.count > 0,
-                    'current-month': day.currentMonth,
-                }" :style="{ backgroundColor: day.color }" @click="showDayDetail(day)">
+                    'has-data': day.total > 0,
+                    'today': day.isToday,
+                }" :style="{ backgroundColor: day.color }" @mouseenter="showTooltip($event, day)"
+                    @mouseleave="hideTooltip" @mousemove="moveTooltip">
                     <span class="day-number">{{ day.day }}</span>
-                    <span v-if="day.count" class="day-count">{{ day.count }}</span>
+                    <span v-if="day.total > 0" class="day-count">{{ day.total }}</span>
                 </div>
+            </div>
+
+            <!-- 图例 -->
+            <div class="legend">
+                <span class="legend-item">
+                    <span class="legend-dot" style="background: rgba(88,166,255,0.25);"></span>少量
+                </span>
+                <span class="legend-item">
+                    <span class="legend-dot" style="background: rgba(88,166,255,0.5);"></span>中等
+                </span>
+                <span class="legend-item">
+                    <span class="legend-dot" style="background: rgba(88,166,255,0.75);"></span>较多
+                </span>
             </div>
         </div>
 
-        <!-- 每日详情弹窗（简单） -->
-        <div v-if="selectedDay" class="modal-overlay" @click.self="selectedDay = null">
-            <div class="modal-content">
-                <h3>{{ selectedDay.date }}</h3>
-                <p>做题数量：{{ selectedDay.count }}</p>
-                <button class="btn" @click="selectedDay = null">关闭</button>
+        <!-- 悬浮提示 -->
+        <Teleport to="body">
+            <div v-if="tooltip.visible" class="tooltip" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
+                <div class="tooltip-date">{{ tooltip.date }}</div>
+                <div class="tooltip-row">
+                    <span class="label">做题数：</span>
+                    <span class="value">{{ tooltip.total }}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="label">错题数：</span>
+                    <span class="value wrong">{{ tooltip.wrong }}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="label">正确率：</span>
+                    <span class="value correct">{{ tooltip.accuracy }}%</span>
+                </div>
             </div>
-        </div>
+        </Teleport>
     </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onActivated, onMounted, computed, watch } from 'vue';
 import * as api from '@/api';
 import dayjs from 'dayjs';
-
-const totalQuestions = ref(0);
-const answeredCount = ref(0);
-const accuracy = ref(0);
-const streak = ref(0);
-
+import { usePaperStore } from '@/stores/paper';
 const currentYear = ref(dayjs().year());
 const currentMonth = ref(dayjs().month() + 1);
-const dailyData = ref<Record<string, number>>({});
-const selectedDay = ref<{ date: string; count: number } | null>(null);
+const dailyData = ref<Record<string, any>>({});
+const paperStore = usePaperStore();
+const tooltip = ref({
+    visible: false,
+    x: 0,
+    y: 0,
+    date: '',
+    total: 0,
+    wrong: 0,
+    accuracy: 0,
+});
 
 const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
 
-// 加载统计信息
-async function loadStats() {
-    const stats = await api.getStats();
-    totalQuestions.value = stats.total_questions || 0;
-    // 计算已答题目数量（从 progress 获取，但简化：从 dailyData 汇总）
-    // 更好的方式是从 progress 直接获取，但为了简化，我们从 dailyData 汇总
-    // 但 dailyData 需要先加载，所以我们在 loadDaily 中一并处理
-}
-
-// 加载每日数据
 async function loadDaily(year: number, month: number) {
-    const data = await api.getDailyStats(year, month);
-    dailyData.value = data;
-
-    // 更新统计
-    const total = Object.values(data).reduce((a, b) => a + b, 0);
-    answeredCount.value = total;
-    // 正确率 = 总题数 / 已答？但题目总数可能大于已答，所以我们用已答/总题数？但总题数包括未答，所以正确率应该是已答中正确的比例，但这里没有正确数。所以暂时用 (总题数 - 未答) / 总题数，但未答未知。因此我们直接显示总题数和已答数，正确率留空或从其他 API 获取。
-    // 这里简单用 stats 中的正确率（但 stats 中只有错题数，不是正确率）
-    // 我们改从 stats 获取总题数和错题数，推断正确率？但错题数可能不完整。
-    // 为了演示，我们暂时把正确率设为 0
-    // 更好的方式：从后端获取已答正确数，但目前没有。我们可计算 progress 中总数为已答，错题数从 wrong_questions 获取，正确 = 已答 - 错题。
-    // 我们来调用 getStats 并补充：
-    const stats = await api.getStats();
-    const wrongTotal = stats.wrong_total || 0;
-    const correct = total - wrongTotal;
-    accuracy.value = total > 0 ? Math.round((correct / total) * 100) : 0;
-
-    // 连续打卡：简单统计连续天数
-    let streakDays = 0;
-    const today = dayjs();
-    for (let i = 0; i < 365; i++) {
-        const d = today.subtract(i, 'day').format('YYYY-MM-DD');
-        if (dailyData.value[d]) {
-            streakDays++;
-        } else {
-            break;
-        }
+    try {
+        // 传当前试卷
+        const data = await api.getDailyStats(
+            year,
+            month,
+            paperStore.selectedPaperId ?? undefined
+        );
+        dailyData.value = data || {};
+    } catch (e) {
+        console.error('加载每日数据失败:', e);
+        dailyData.value = {};
     }
-    streak.value = streakDays;
 }
 
-// 生成日历网格
 const days = computed(() => {
     const firstDay = dayjs(`${currentYear.value}-${currentMonth.value}-01`);
     const daysInMonth = firstDay.daysInMonth();
-    const startWeekday = firstDay.day(); // 0=周日
+    const startWeekday = firstDay.day();
+    const today = dayjs().format('YYYY-MM-DD');
 
-    const result = [];
-    // 填充空白
+    const result: any[] = [];
     for (let i = 0; i < startWeekday; i++) {
-        result.push({ date: '', day: '', count: 0, currentMonth: false });
+        result.push({ date: '', day: '', total: 0 });
     }
-    // 填充日期
     for (let d = 1; d <= daysInMonth; d++) {
         const dateStr = firstDay.date(d).format('YYYY-MM-DD');
-        const count = dailyData.value[dateStr] || 0;
-        const maxCount = 10; // 最大颜色深度
-        const intensity = Math.min(count / maxCount, 1);
-        const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-        const baseColor = isDark ? '#1c2333' : '#ffffff';
-        const activeColor = isDark ? '#58a6ff' : '#0969da';
-        const color = count > 0 ? `rgba(88, 166, 255, ${0.3 + intensity * 0.6})` : 'transparent';
+        const stats = dailyData.value[dateStr] || { total: 0, wrong: 0, correct: 0, accuracy: 0 };
+        const count = stats.total || 0;
+        const intensity = Math.min(count / 10, 1);
+        const color = count > 0 ? `rgba(88, 166, 255, ${0.15 + intensity * 0.65})` : 'transparent';
         result.push({
             date: dateStr,
             day: d,
-            count,
-            currentMonth: true,
+            total: count,
+            wrong: stats.wrong || 0,
+            correct: stats.correct || 0,
+            accuracy: stats.accuracy || 0,
             color,
+            isToday: dateStr === today,
         });
     }
-    // 补全尾部空白
     const remaining = 7 - (result.length % 7);
     if (remaining < 7) {
         for (let i = 0; i < remaining; i++) {
-            result.push({ date: '', day: '', count: 0, currentMonth: false });
+            result.push({ date: '', day: '', total: 0 });
         }
     }
     return result;
 });
+
+function showTooltip(event: MouseEvent, day: any) {
+    if (!day.date) return;
+    tooltip.value = {
+        visible: true,
+        x: event.clientX + 14,
+        y: event.clientY + 14,
+        date: day.date,
+        total: day.total || 0,
+        wrong: day.wrong || 0,
+        accuracy: day.accuracy || 0,
+    };
+}
+
+function moveTooltip(event: MouseEvent) {
+    if (tooltip.value.visible) {
+        tooltip.value.x = event.clientX + 14;
+        tooltip.value.y = event.clientY + 14;
+    }
+}
+
+function hideTooltip() {
+    tooltip.value.visible = false;
+}
 
 function prevMonth() {
     const d = dayjs(`${currentYear.value}-${currentMonth.value}-01`).subtract(1, 'month');
@@ -164,15 +166,18 @@ function nextMonth() {
     currentMonth.value = d.month() + 1;
     loadDaily(currentYear.value, currentMonth.value);
 }
-
-function showDayDetail(day: any) {
-    if (day.count > 0) {
-        selectedDay.value = { date: day.date, count: day.count };
+// 监听全局试卷变化
+watch(
+    () => paperStore.selectedPaperId,
+    () => {
+        loadDaily(currentYear.value, currentMonth.value);
     }
-}
-
-onMounted(() => {
-    loadStats();
+);
+onMounted(async () => {
+    await paperStore.ensureInit();
+    loadDaily(currentYear.value, currentMonth.value);
+});
+onActivated(() => {
     loadDaily(currentYear.value, currentMonth.value);
 });
 </script>
@@ -182,65 +187,61 @@ onMounted(() => {
     padding: 20px;
     background: var(--bg-primary);
     color: var(--text-primary);
-    height: calc(100vh - 80px);
-    overflow-y: auto;
-}
-
-.stats-row {
+    min-height: calc(100vh - 80px);
     display: flex;
-    gap: 16px;
-    flex-wrap: wrap;
-    margin-bottom: 24px;
-}
-
-.stat-card {
-    background: var(--bg-card);
-    border-radius: var(--radius);
-    padding: 16px 24px;
-    min-width: 100px;
-    flex: 1;
-    border: 1px solid var(--border-color);
-    text-align: center;
-}
-
-.stat-value {
-    font-size: 28px;
-    font-weight: 700;
-}
-
-.stat-label {
-    font-size: 14px;
-    color: var(--text-secondary);
-    margin-top: 4px;
+    justify-content: center;
+    align-items: flex-start;
 }
 
 .calendar-wrapper {
+    width: 100%;
+    max-width: 800px;
     background: var(--bg-card);
     border-radius: var(--radius);
-    padding: 16px;
+    padding: 24px;
     border: 1px solid var(--border-color);
+    box-shadow: var(--shadow);
 }
 
 .calendar-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: 20px;
 }
 
-.calendar-header button {
+.month-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.nav-btn {
     background: var(--bg-secondary);
     color: var(--text-primary);
     border: 1px solid var(--border-color);
-    padding: 4px 12px;
-    border-radius: 4px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    font-size: 20px;
     cursor: pointer;
+    transition: var(--transition);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.nav-btn:hover {
+    background: var(--accent-blue);
+    color: #fff;
+    border-color: var(--accent-blue);
+    transform: scale(1.1);
 }
 
 .calendar-grid {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
-    gap: 4px;
+    gap: 6px;
 }
 
 .weekday {
@@ -248,6 +249,7 @@ onMounted(() => {
     color: var(--text-secondary);
     text-align: center;
     padding: 8px 0;
+    font-size: 14px;
 }
 
 .calendar-cell {
@@ -256,20 +258,34 @@ onMounted(() => {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    border-radius: 4px;
+    border-radius: 8px;
     cursor: default;
     position: relative;
     background-color: transparent;
-    transition: background-color 0.2s;
+    transition: all 0.25s ease;
+    border: 1px solid transparent;
 }
 
 .calendar-cell.has-data {
     cursor: pointer;
 }
 
+.calendar-cell.has-data:hover {
+    transform: scale(1.08);
+    box-shadow: 0 4px 12px rgba(88, 166, 255, 0.35);
+    border-color: var(--accent-blue);
+    z-index: 2;
+}
+
+.calendar-cell.today {
+    border: 2px solid var(--accent-green);
+    font-weight: 700;
+}
+
 .calendar-cell .day-number {
     font-size: 14px;
     color: var(--text-primary);
+    line-height: 1;
 }
 
 .calendar-cell .day-count {
@@ -282,24 +298,78 @@ onMounted(() => {
     visibility: hidden;
 }
 
-.modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.5);
+.legend {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
+    gap: 20px;
+    justify-content: flex-end;
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--text-secondary);
 }
 
-.modal-content {
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.legend-dot {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+/* 悬浮提示 */
+.tooltip {
+    position: fixed;
+    z-index: 9999;
     background: var(--bg-card);
-    padding: 24px;
-    border-radius: var(--radius);
-    max-width: 400px;
-    width: 90%;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 14px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+    pointer-events: none;
+    min-width: 140px;
+    font-size: 13px;
+}
+
+.tooltip-date {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.tooltip-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+
+.tooltip-row .label {
+    color: var(--text-secondary);
+}
+
+.tooltip-row .value {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.tooltip-row .value.wrong {
+    color: var(--accent-red);
+}
+
+.tooltip-row .value.correct {
+    color: var(--accent-green);
+}
+
+.current-paper {
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 12px;
 }
 </style>

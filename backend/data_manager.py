@@ -8,7 +8,7 @@ from config import (
     MYSQL_PORT,
     TYPE_ORDER,
 )
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import sys
 
 
@@ -95,7 +95,46 @@ def init_db():
                     FOREIGN KEY (knowledge_id) REFERENCES knowledge_points(id) ON DELETE CASCADE
                 )
             """)
+            # 间隔重复卡片表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS srs_cards (
+                    id INT PRIMARY KEY AUTO_INCREMENT,
+                    user_id INT DEFAULT 1,
+                    question_id INT NOT NULL,
+                    ease_factor FLOAT DEFAULT 2.5,
+                    interval_days INT DEFAULT 0,
+                    repetitions INT DEFAULT 0,
+                    due_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_reviewed_at TIMESTAMP NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY unique_user_question (user_id, question_id),
+                    FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
+                )
+            """)
 
+            # 费曼学习记录
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS feynman_sessions (
+                    id INT PRIMARY KEY AUTO_INCREMENT,
+                    user_id INT DEFAULT 1,
+                    question_id INT,
+                    messages JSON,
+                    score INT DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 图谱漫游记录
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS graph_walks (
+                    id INT PRIMARY KEY AUTO_INCREMENT,
+                    user_id INT DEFAULT 1,
+                    knowledge_id INT,
+                    path JSON,
+                    status VARCHAR(20) DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             # ========== 字段迁移（分别独立判断） ==========
             # progress_timestamp
             cursor.execute("SHOW COLUMNS FROM user_settings LIKE 'progress_timestamp'")
@@ -207,29 +246,63 @@ def save_user_settings(settings):
     conn = get_db()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO user_settings (user_id, current_pos, filter_wrong, random_order, practice_limit, paper_id, progress, progress_timestamp)
-                VALUES (1, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                current_pos=VALUES(current_pos),
-                filter_wrong=VALUES(filter_wrong),
-                random_order=VALUES(random_order),
-                practice_limit=VALUES(practice_limit),
-                paper_id=VALUES(paper_id),
-                progress=VALUES(progress),
-                progress_timestamp=VALUES(progress_timestamp)
-            """,
-                (
-                    settings.get("current_pos", 0),
-                    settings.get("filter_wrong", False),
-                    settings.get("random_order", False),
-                    settings.get("practice_limit", 20),
-                    settings.get("paper_id"),
-                    json.dumps(settings.get("progress", {})),
-                    json.dumps(settings.get("progress_timestamp", {})),
-                ),
+            # 是否要更新 progress_timestamp
+            update_ts = (
+                "progress_timestamp" in settings
+                and settings["progress_timestamp"] is not None
             )
+
+            if update_ts:
+                cursor.execute(
+                    """
+                    INSERT INTO user_settings 
+                        (user_id, current_pos, filter_wrong, random_order, 
+                         practice_limit, paper_id, progress, progress_timestamp)
+                    VALUES (1, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        current_pos=VALUES(current_pos),
+                        filter_wrong=VALUES(filter_wrong),
+                        random_order=VALUES(random_order),
+                        practice_limit=VALUES(practice_limit),
+                        paper_id=VALUES(paper_id),
+                        progress=VALUES(progress),
+                        progress_timestamp=VALUES(progress_timestamp)
+                    """,
+                    (
+                        settings.get("current_pos", 0),
+                        settings.get("filter_wrong", False),
+                        settings.get("random_order", False),
+                        settings.get("practice_limit", 20),
+                        settings.get("paper_id"),
+                        json.dumps(settings.get("progress", {})),
+                        json.dumps(settings.get("progress_timestamp", {})),
+                    ),
+                )
+            else:
+                # 不更新 progress_timestamp，保留数据库中的原值
+                cursor.execute(
+                    """
+                    INSERT INTO user_settings 
+                        (user_id, current_pos, filter_wrong, random_order, 
+                         practice_limit, paper_id, progress)
+                    VALUES (1, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        current_pos=VALUES(current_pos),
+                        filter_wrong=VALUES(filter_wrong),
+                        random_order=VALUES(random_order),
+                        practice_limit=VALUES(practice_limit),
+                        paper_id=VALUES(paper_id),
+                        progress=VALUES(progress)
+                    """,
+                    (
+                        settings.get("current_pos", 0),
+                        settings.get("filter_wrong", False),
+                        settings.get("random_order", False),
+                        settings.get("practice_limit", 20),
+                        settings.get("paper_id"),
+                        json.dumps(settings.get("progress", {})),
+                    ),
+                )
         conn.commit()
     finally:
         conn.close()
@@ -512,29 +585,58 @@ def get_wrong_question_ids(user_id):
         conn.close()
 
 
-def get_stats_data():
-    """统计：总题数、错题数、各题型错题数"""
+def get_stats_data(paper_id=None):
+    """统计：总题数、错题数、各题型错题数（可按试卷过滤）"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
             # 总题数
-            cursor.execute("SELECT COUNT(*) as total FROM questions")
+            if paper_id is not None:
+                cursor.execute(
+                    "SELECT COUNT(*) as total FROM questions WHERE paper_id = %s",
+                    (paper_id,),
+                )
+            else:
+                cursor.execute("SELECT COUNT(*) as total FROM questions")
             total_q = cursor.fetchone()["total"]
 
             # 错题总数
-            cursor.execute(
-                "SELECT COUNT(DISTINCT question_id) as total FROM wrong_questions WHERE user_id = 1"
-            )
+            if paper_id is not None:
+                cursor.execute(
+                    """
+                    SELECT COUNT(DISTINCT w.question_id) as total 
+                    FROM wrong_questions w
+                    JOIN questions q ON w.question_id = q.id
+                    WHERE w.user_id = 1 AND q.paper_id = %s
+                """,
+                    (paper_id,),
+                )
+            else:
+                cursor.execute(
+                    "SELECT COUNT(DISTINCT question_id) as total FROM wrong_questions WHERE user_id = 1"
+                )
             wrong_total = cursor.fetchone()["total"]
 
             # 各题型错题数
-            cursor.execute("""
-                SELECT q.type, COUNT(w.question_id) as wrong_count
-                FROM wrong_questions w
-                JOIN questions q ON w.question_id = q.id
-                WHERE w.user_id = 1
-                GROUP BY q.type
-            """)
+            if paper_id is not None:
+                cursor.execute(
+                    """
+                    SELECT q.type, COUNT(w.question_id) as wrong_count
+                    FROM wrong_questions w
+                    JOIN questions q ON w.question_id = q.id
+                    WHERE w.user_id = 1 AND q.paper_id = %s
+                    GROUP BY q.type
+                """,
+                    (paper_id,),
+                )
+            else:
+                cursor.execute("""
+                    SELECT q.type, COUNT(w.question_id) as wrong_count
+                    FROM wrong_questions w
+                    JOIN questions q ON w.question_id = q.id
+                    WHERE w.user_id = 1
+                    GROUP BY q.type
+                """)
             type_stats = cursor.fetchall()
 
             return {
@@ -546,22 +648,24 @@ def get_stats_data():
         conn.close()
 
 
-def get_recent_wrong_questions(user_id, limit=10):
+def get_recent_wrong_questions(user_id, limit=10, paper_id=None):
     conn = get_db()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT q.id, q.type, q.content, q.options, q.answer, q.explanation, q.steps, 
+            sql = """
+                SELECT q.id, q.type, q.content, q.options, q.answer, q.explanation, q.steps,
                        w.wrong_count, w.last_wrong_time
                 FROM wrong_questions w
                 JOIN questions q ON w.question_id = q.id
                 WHERE w.user_id = %s
-                ORDER BY w.last_wrong_time DESC
-                LIMIT %s
-            """,
-                (user_id, limit),
-            )
+            """
+            params = [user_id]
+            if paper_id is not None:
+                sql += " AND q.paper_id = %s"
+                params.append(paper_id)
+            sql += " ORDER BY w.last_wrong_time DESC LIMIT %s"
+            params.append(limit)
+            cursor.execute(sql, params)
             rows = cursor.fetchall()
             questions = []
             for row in rows:
@@ -613,22 +717,24 @@ def determine_status(qid, progress, wrong_ids):
         return "未作答"
 
 
-def get_wrong_report_data(user_id):
-    """获取用户的所有错题详细信息"""
+def get_wrong_report_data(user_id, paper_id=None):
+    """获取错题详细信息（可按试卷过滤）"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT q.id, q.type, q.content, q.explanation, 
+            sql = """
+                SELECT q.id, q.type, q.content, q.explanation,
                        w.wrong_count, w.last_wrong_time
                 FROM wrong_questions w
                 JOIN questions q ON w.question_id = q.id
                 WHERE w.user_id = %s
-                ORDER BY w.last_wrong_time DESC
-            """,
-                (user_id,),
-            )
+            """
+            params = [user_id]
+            if paper_id is not None:
+                sql += " AND q.paper_id = %s"
+                params.append(paper_id)
+            sql += " ORDER BY w.last_wrong_time DESC"
+            cursor.execute(sql, params)
             rows = cursor.fetchall()
             questions = []
             for row in rows:
@@ -801,7 +907,7 @@ def reset_all_ids():
 
 
 def update_progress_timestamp(question_id):
-    """记录题目的最后作答时间"""
+    """记录题目的最后作答时间（独立于 save_progress）"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -809,10 +915,16 @@ def update_progress_timestamp(question_id):
                 "SELECT progress_timestamp FROM user_settings WHERE user_id = 1"
             )
             row = cursor.fetchone()
+            ts = {}
             if row and row["progress_timestamp"]:
-                ts = json.loads(row["progress_timestamp"])
-            else:
-                ts = {}
+                try:
+                    ts = (
+                        json.loads(row["progress_timestamp"])
+                        if isinstance(row["progress_timestamp"], str)
+                        else row["progress_timestamp"]
+                    )
+                except Exception:
+                    ts = {}
             ts[str(question_id)] = datetime.now().isoformat()
             cursor.execute(
                 "UPDATE user_settings SET progress_timestamp = %s WHERE user_id = 1",
@@ -893,13 +1005,16 @@ def clean_old_progress_with_days(days):
 
 
 def get_all_papers():
-    """获取所有试卷"""
+    """获取所有试卷，并实时统计每个试卷的题目数"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                "SELECT id, title, total_questions, created_at FROM paper_info ORDER BY id"
-            )
+            cursor.execute("""
+                SELECT p.id, p.title, p.created_at,
+                       (SELECT COUNT(*) FROM questions q WHERE q.paper_id = p.id) AS total_questions
+                FROM paper_info p
+                ORDER BY p.id
+            """)
             return cursor.fetchall()
     finally:
         conn.close()
@@ -941,64 +1056,117 @@ def delete_paper(paper_id):
         conn.close()
 
 
-def get_knowledge_graph_data(user_id=1):
-    """获取知识图谱数据：节点、边，增加分组信息"""
+def get_knowledge_graph_data(user_id=1, paper_id=None):
+    """获取知识图谱数据（可按试卷过滤）"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
-            # 获取所有知识点
+            # 获取知识点（仅统计该试卷下的题目）
             cursor.execute("SELECT id, name FROM knowledge_points")
             kps = cursor.fetchall()
             nodes = []
             for kp in kps:
-                # 计算题目数量
-                cursor.execute(
-                    "SELECT COUNT(*) as cnt FROM question_knowledge WHERE knowledge_id = %s",
-                    (kp["id"],),
-                )
-                cnt = cursor.fetchone()["cnt"]
-                # 计算错题数量
-                cursor.execute(
-                    """
-                    SELECT COUNT(DISTINCT qk.question_id) as wrong_cnt
-                    FROM question_knowledge qk
-                    JOIN wrong_questions w ON w.question_id = qk.question_id AND w.user_id = %s
-                    WHERE qk.knowledge_id = %s
-                """,
-                    (user_id, kp["id"]),
-                )
-                wrong = cursor.fetchone()["wrong_cnt"] or 0
-                # 获取该知识点下的题目ID列表（用于详情展示）
-                cursor.execute(
-                    """
-                    SELECT question_id FROM question_knowledge WHERE knowledge_id = %s
-                """,
-                    (kp["id"],),
-                )
-                qids = [row["question_id"] for row in cursor.fetchall()]
-                nodes.append(
-                    {
-                        "id": kp["id"],
-                        "name": kp["name"],
-                        "value": cnt,
-                        "wrong": wrong,
-                        "question_ids": qids,
-                    }
-                )
-            # 计算边（共现关系）
+                if paper_id is not None:
+                    cursor.execute(
+                        """
+                        SELECT COUNT(*) as cnt FROM question_knowledge qk
+                        JOIN questions q ON qk.question_id = q.id
+                        WHERE qk.knowledge_id = %s AND q.paper_id = %s
+                    """,
+                        (kp["id"], paper_id),
+                    )
+                    cnt = cursor.fetchone()["cnt"]
+
+                    cursor.execute(
+                        """
+                        SELECT COUNT(DISTINCT qk.question_id) as wrong_cnt
+                        FROM question_knowledge qk
+                        JOIN questions q ON qk.question_id = q.id
+                        JOIN wrong_questions w ON w.question_id = qk.question_id AND w.user_id = %s
+                        WHERE qk.knowledge_id = %s AND q.paper_id = %s
+                    """,
+                        (user_id, kp["id"], paper_id),
+                    )
+                    wrong = cursor.fetchone()["wrong_cnt"] or 0
+
+                    cursor.execute(
+                        """
+                        SELECT qk.question_id FROM question_knowledge qk
+                        JOIN questions q ON qk.question_id = q.id
+                        WHERE qk.knowledge_id = %s AND q.paper_id = %s
+                    """,
+                        (kp["id"], paper_id),
+                    )
+                    qids = [row["question_id"] for row in cursor.fetchall()]
+                else:
+                    cursor.execute(
+                        "SELECT COUNT(*) as cnt FROM question_knowledge WHERE knowledge_id = %s",
+                        (kp["id"],),
+                    )
+                    cnt = cursor.fetchone()["cnt"]
+
+                    cursor.execute(
+                        """
+                        SELECT COUNT(DISTINCT qk.question_id) as wrong_cnt
+                        FROM question_knowledge qk
+                        JOIN wrong_questions w ON w.question_id = qk.question_id AND w.user_id = %s
+                        WHERE qk.knowledge_id = %s
+                    """,
+                        (user_id, kp["id"]),
+                    )
+                    wrong = cursor.fetchone()["wrong_cnt"] or 0
+
+                    cursor.execute(
+                        "SELECT question_id FROM question_knowledge WHERE knowledge_id = %s",
+                        (kp["id"],),
+                    )
+                    qids = [row["question_id"] for row in cursor.fetchall()]
+
+                # 仅保留有题目的知识点
+                if cnt > 0:
+                    nodes.append(
+                        {
+                            "id": kp["id"],
+                            "name": kp["name"],
+                            "value": cnt,
+                            "wrong": wrong,
+                            "question_ids": qids,
+                        }
+                    )
+
+            # 计算边（共现关系，仅在该试卷内）
             edges = []
-            cursor.execute("""
-                SELECT qk1.knowledge_id as k1, qk2.knowledge_id as k2, COUNT(*) as weight
-                FROM question_knowledge qk1
-                JOIN question_knowledge qk2 ON qk1.question_id = qk2.question_id AND qk1.knowledge_id < qk2.knowledge_id
-                GROUP BY k1, k2
-                ORDER BY weight DESC
-            """)
+            if paper_id is not None:
+                cursor.execute(
+                    """
+                    SELECT qk1.knowledge_id as k1, qk2.knowledge_id as k2, COUNT(*) as weight
+                    FROM question_knowledge qk1
+                    JOIN question_knowledge qk2 
+                        ON qk1.question_id = qk2.question_id 
+                        AND qk1.knowledge_id < qk2.knowledge_id
+                    JOIN questions q ON qk1.question_id = q.id
+                    WHERE q.paper_id = %s
+                    GROUP BY k1, k2
+                    ORDER BY weight DESC
+                """,
+                    (paper_id,),
+                )
+            else:
+                cursor.execute("""
+                    SELECT qk1.knowledge_id as k1, qk2.knowledge_id as k2, COUNT(*) as weight
+                    FROM question_knowledge qk1
+                    JOIN question_knowledge qk2 
+                        ON qk1.question_id = qk2.question_id 
+                        AND qk1.knowledge_id < qk2.knowledge_id
+                    GROUP BY k1, k2
+                    ORDER BY weight DESC
+                """)
             edge_rows = cursor.fetchall()
             for row in edge_rows:
                 edges.append(
                     {"source": row["k1"], "target": row["k2"], "weight": row["weight"]}
                 )
+
             return {"nodes": nodes, "edges": edges}
     finally:
         conn.close()
@@ -1090,8 +1258,8 @@ def set_question_knowledge(question_id, knowledge_ids):
         conn.close()
 
 
-def get_daily_stats(user_id, year=None, month=None):
-    """获取指定月份的每日做题数量（基于 progress_timestamp）"""
+def get_daily_stats(user_id, year=None, month=None, paper_id=None):
+    """获取指定月份的每日做题数据（做题数、错题数、正确率，可按试卷过滤）"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -1106,22 +1274,287 @@ def get_daily_stats(user_id, year=None, month=None):
             if not ts:
                 return {}
 
-            # 当前月份（默认）
+            # 当前错题ID集合（可按试卷过滤）
+            if paper_id is not None:
+                cursor.execute(
+                    """
+                    SELECT w.question_id FROM wrong_questions w
+                    JOIN questions q ON w.question_id = q.id
+                    WHERE w.user_id = %s AND q.paper_id = %s
+                """,
+                    (user_id, paper_id),
+                )
+            else:
+                cursor.execute(
+                    "SELECT question_id FROM wrong_questions WHERE user_id = %s",
+                    (user_id,),
+                )
+            wrong_ids = {r["question_id"] for r in cursor.fetchall()}
+
+            # 该试卷下的所有题目ID（用于过滤 progress_timestamp）
+            if paper_id is not None:
+                cursor.execute(
+                    "SELECT id FROM questions WHERE paper_id = %s",
+                    (paper_id,),
+                )
+                valid_ids = {r["id"] for r in cursor.fetchall()}
+            else:
+                valid_ids = None  # 不限制
+
             if year is None or month is None:
                 now = datetime.now()
                 year = now.year
                 month = now.month
 
-            # 统计每天的数量
-            daily_count = {}
-            for _, timestamp_str in ts.items():
+            daily_stats = {}
+            for qid_str, timestamp_str in ts.items():
                 try:
+                    qid = int(qid_str)
+                    # 若指定试卷，仅统计属于该试卷的题目
+                    if valid_ids is not None and qid not in valid_ids:
+                        continue
                     dt = datetime.fromisoformat(timestamp_str)
                     if dt.year == year and dt.month == month:
                         key = dt.strftime("%Y-%m-%d")
-                        daily_count[key] = daily_count.get(key, 0) + 1
-                except:
+                        if key not in daily_stats:
+                            daily_stats[key] = {"total": 0, "wrong": 0, "correct": 0}
+                        daily_stats[key]["total"] += 1
+                        if qid in wrong_ids:
+                            daily_stats[key]["wrong"] += 1
+                        else:
+                            daily_stats[key]["correct"] += 1
+                except Exception:
                     continue
-            return daily_count
+
+            # 计算正确率
+            for stat in daily_stats.values():
+                if stat["total"] > 0:
+                    stat["accuracy"] = round(stat["correct"] / stat["total"] * 100, 1)
+                else:
+                    stat["accuracy"] = 0
+
+            return daily_stats
+    finally:
+        conn.close()
+
+
+def add_question_to_srs(question_id, user_id=1):
+    """将题目加入间隔重复系统（立即到期）"""
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT IGNORE INTO srs_cards (user_id, question_id, due_date)
+                VALUES (%s, %s, NOW())
+            """,
+                (user_id, question_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_due_srs_cards(user_id=1, paper_id=None, limit=50):
+    """获取今日待复习的题目"""
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                SELECT c.id AS card_id, c.question_id, c.ease_factor, c.interval_days,
+                       c.repetitions, c.due_date,
+                       q.type, q.content, q.options, q.answer, q.explanation, q.steps, q.paper_id
+                FROM srs_cards c
+                JOIN questions q ON c.question_id = q.id
+                WHERE c.user_id = %s AND c.due_date <= NOW()
+            """
+            params = [user_id]
+            if paper_id is not None:
+                sql += " AND q.paper_id = %s"
+                params.append(paper_id)
+            sql += " ORDER BY c.due_date ASC, c.ease_factor ASC LIMIT %s"
+            params.append(limit)
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            cards = []
+            for row in rows:
+                cards.append(
+                    {
+                        "card_id": row["card_id"],
+                        "question_id": row["question_id"],
+                        "type": row["type"],
+                        "content": row["content"],
+                        "options": json.loads(row["options"]) if row["options"] else [],
+                        "answer": json.loads(row["answer"]) if row["answer"] else None,
+                        "explanation": row["explanation"] or "",
+                        "steps": json.loads(row["steps"]) if row["steps"] else [],
+                        "ease_factor": row["ease_factor"],
+                        "interval_days": row["interval_days"],
+                        "repetitions": row["repetitions"],
+                    }
+                )
+            return cards
+    finally:
+        conn.close()
+
+
+def review_srs_card(card_id, quality, user_id=1):
+    """SM-2 算法复习一张卡片"""
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT ease_factor, interval_days, repetitions FROM srs_cards WHERE id = %s AND user_id = %s",
+                (card_id, user_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            ef = row["ease_factor"]
+            interval = row["interval_days"]
+            reps = row["repetitions"]
+
+            if quality < 3:
+                reps = 0
+                interval = 1
+            else:
+                if reps == 0:
+                    interval = 1
+                elif reps == 1:
+                    interval = 6
+                else:
+                    interval = round(interval * ef)
+                reps += 1
+
+            ef = ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
+            if ef < 1.3:
+                ef = 1.3
+
+            # 用 datetime.now() + timedelta
+            due_datetime = datetime.now() + timedelta(days=interval)
+
+            cursor.execute(
+                """
+                UPDATE srs_cards SET
+                    ease_factor = %s,
+                    interval_days = %s,
+                    repetitions = %s,
+                    due_date = %s,
+                    last_reviewed_at = NOW()
+                WHERE id = %s
+            """,
+                (ef, interval, reps, due_datetime, card_id),
+            )
+        conn.commit()
+        return {
+            "ease_factor": ef,
+            "interval_days": interval,
+            "repetitions": reps,
+            "due_date": due_datetime.isoformat(),
+        }
+    finally:
+        conn.close()
+
+
+def get_srs_stats(user_id=1, paper_id=None):
+    """SRS 复习统计"""
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            base_sql = """
+                FROM srs_cards c
+                JOIN questions q ON c.question_id = q.id
+                WHERE c.user_id = %s
+            """
+            params = [user_id]
+            if paper_id is not None:
+                base_sql += " AND q.paper_id = %s"
+                params.append(paper_id)
+
+            cursor.execute(f"SELECT COUNT(*) as total {base_sql}", params)
+            total = cursor.fetchone()["total"]
+
+            # due_date <= NOW() 表示已到期
+            cursor.execute(
+                f"SELECT COUNT(*) as due {base_sql} AND c.due_date <= NOW()", params
+            )
+            due = cursor.fetchone()["due"]
+
+            # 今日已复习：DATE(last_reviewed_at) = CURDATE()
+            cursor.execute(
+                f"SELECT COUNT(*) as today_reviewed {base_sql} AND DATE(c.last_reviewed_at) = CURDATE()",
+                params,
+            )
+            today_reviewed = cursor.fetchone()["today_reviewed"]
+
+            cursor.execute(
+                f"SELECT COUNT(*) as mastered {base_sql} AND c.repetitions >= 3", params
+            )
+            mastered = cursor.fetchone()["mastered"]
+
+            return {
+                "total": total,
+                "due": due,
+                "today_reviewed": today_reviewed,
+                "mastered": mastered,
+            }
+    finally:
+        conn.close()
+
+
+def start_graph_walk(knowledge_id, user_id=1):
+    """从某知识点开始漫游"""
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO graph_walks (user_id, knowledge_id, path, status)
+                VALUES (%s, %s, %s, 'active')
+            """,
+                (user_id, knowledge_id, json.dumps([knowledge_id])),
+            )
+            conn.commit()
+            return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def get_related_knowledge(knowledge_id, paper_id=None, limit=10):
+    """获取与指定知识点相关（共现）的其他知识点"""
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            if paper_id is not None:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT k.id, k.name, COUNT(*) as weight
+                    FROM question_knowledge qk1
+                    JOIN question_knowledge qk2 ON qk1.question_id = qk2.question_id
+                    JOIN knowledge_points k ON k.id = qk2.knowledge_id
+                    JOIN questions q ON qk1.question_id = q.id
+                    WHERE qk1.knowledge_id = %s AND qk2.knowledge_id != %s AND q.paper_id = %s
+                    GROUP BY k.id, k.name
+                    ORDER BY weight DESC
+                    LIMIT %s
+                """,
+                    (knowledge_id, knowledge_id, paper_id, limit),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT k.id, k.name, COUNT(*) as weight
+                    FROM question_knowledge qk1
+                    JOIN question_knowledge qk2 ON qk1.question_id = qk2.question_id
+                    JOIN knowledge_points k ON k.id = qk2.knowledge_id
+                    WHERE qk1.knowledge_id = %s AND qk2.knowledge_id != %s
+                    GROUP BY k.id, k.name
+                    ORDER BY weight DESC
+                    LIMIT %s
+                """,
+                    (knowledge_id, knowledge_id, limit),
+                )
+            return cursor.fetchall()
     finally:
         conn.close()
